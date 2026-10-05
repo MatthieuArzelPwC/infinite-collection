@@ -1,0 +1,13 @@
+{
+  "name": "weweb-infinite-collection",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "serve": "weweb serve",
+    "build": "weweb build --name=infinite-collection --type=wwobject",
+    "test": "node --test test/"
+  },
+  "devDependencies": {
+    "@weweb/cli": "3.8.16"
+  }
+}
