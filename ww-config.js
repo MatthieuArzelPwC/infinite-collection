@@ -7,7 +7,7 @@ const itemsHelp =
   "La collection a repeter. Binder sur `maCollection.data`.\n\nLa collection DOIT avoir une limite configuree dans le studio (ex: 50) : c'est cette limite qui active la pagination serveur cote plugin.";
 
 const itemKeyHelp =
-  "Nom du champ qui identifie un element de maniere unique (ex: `id`). Sert a dedupliquer les elements entre deux pages. Laisser vide si aucun champ ne convient : l'index absolu sera utilise, mais la deduplication sera moins fiable.";
+  "Nom du champ qui identifie un element de maniere unique (ex: `id`), idealement la cle primaire. La valeur doit etre scalaire (texte, nombre, booleen), stable et unique dans toute la collection. Une cle objet ou absente fait retomber sur l'index absolu, dont la deduplication est moins fiable.";
 
 const estimatedItemHeightHelp =
   "Hauteur approximative d'un element en pixels. Alimente `contain-intrinsic-size` pour que le navigateur dimensionne la barre de scroll sans calculer la mise en page des elements hors ecran. Une valeur approximative suffit.";
@@ -44,7 +44,7 @@ export default {
     {
       name: 'error',
       label: { en: 'On error', fr: 'En cas d erreur' },
-      event: { message: '' },
+      event: { code: '', message: '' },
     },
   ],
   properties: {
@@ -89,7 +89,7 @@ export default {
       /* wwEditor:start */
       propertyHelp: {
         tooltip:
-          "Collection a paginer. Si ce champ reste vide, le composant tente de retrouver automatiquement la collection a partir du binding de `Collection`. En dernier recours, utiliser l'evenement `On load more` pour piloter la pagination via un workflow.",
+          "Collection a paginer. Recommande : la selectionner explicitement. Si ce champ reste vide, le composant tente de retrouver automatiquement la collection a partir du binding de `Collection`. Si aucune source n'est resolue, le composant s'arrete et emet l'evenement `On error`.",
       },
       /* wwEditor:end */
     },

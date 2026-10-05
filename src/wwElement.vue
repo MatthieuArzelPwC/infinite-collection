@@ -23,10 +23,24 @@
 
 <script>
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
-import { mergeItems, resetItems, planNextFetch, classifyIncoming, parsePaginatedSource } from './logic.mjs';
+import {
+  STATES,
+  ERROR_CODES,
+  describeError,
+  mergeItems,
+  resetItems,
+  validatePagination,
+  planNextFetch,
+  classifyIncoming,
+  classifyPage,
+  parsePaginatedSource,
+  canLoad,
+  transition,
+} from './logic.mjs';
 
-// Delai au-dela duquel on considere qu'un fetch demande n'aboutira pas, pour ne
-// pas rester bloque indefiniment si la collection ne se met jamais a jour.
+// Delai au-dela duquel une page demandee est consideree comme en retard. Le verrou
+// n'est PAS libere : une reponse tardive doit encore pouvoir etre integree, sans quoi
+// elle serait prise pour un changement de filtre et effacerait les pages accumulees.
 const FETCH_TIMEOUT_MS = 10000;
 
 export default {
@@ -46,13 +60,15 @@ export default {
     const accumulator = ref([]);
     const keys = ref(new Set());
 
-    // Offset demande par le composant, en attente de confirmation par un
-    // changement de `content.items`. `null` = aucun fetch en cours.
+    // Offset de la page demandee, en attente de confirmation par un changement de
+    // `content.items`. `null` = aucune page en vol.
     const pendingOffset = ref(null);
-    const isExhausted = ref(false);
+    const state = ref(STATES.IDLE);
+
     let fetchTimeout = null;
     let observer = null;
     let scrollTarget = null;
+    let observerRetryTimer = null;
 
     const isEditing = computed(() => {
       /* wwEditor:start */
@@ -89,44 +105,99 @@ export default {
       return { '--ic-item-height': `${safeHeight}px` };
     });
 
+    /* -------------------------------------------------------------- *
+     * Etat et erreurs
+     * -------------------------------------------------------------- */
+
+    const goTo = next => {
+      const result = transition(state.value, next);
+      if (result.changed) state.value = result.state;
+      return result.changed;
+    };
+
     /**
-     * Resout l'identifiant de la collection a paginer, par ordre de fiabilite
-     * decroissante :
-     *   1. la propriete `PaginatedSource` si elle est renseignee ;
-     *   2. l'auto-detection : on cherche la collection dont `data` est la meme
-     *      reference de tableau que celle bindee sur `items`.
-     * Si les deux echouent, seul l'evenement `loadMore` est emis et la pagination
-     * doit etre pilotee par un workflow.
+     * Emet une erreur et bloque les chargements suivants.
+     *
+     * Les elements deja accumules sont conserves : une panne de pagination ne doit
+     * pas faire disparaitre ce que l'utilisateur voit.
      */
-    const resolveCollectionId = () => {
-      const explicit = parsePaginatedSource(props.content.paginatedSource);
-      if (explicit) return explicit;
+    const fail = (code, details) => {
+      const error = describeError(code, details);
+      if (!goTo(STATES.FAILED)) return;
+      emit('trigger-event', { name: 'error', event: { code: error.code, message: error.message } });
+    };
+
+    const finish = total => {
+      if (!goTo(STATES.ENDED)) return;
+      emit('trigger-event', {
+        name: 'reachEnd',
+        event: { total: total ?? null, loaded: accumulator.value.length },
+      });
+    };
+
+    /* -------------------------------------------------------------- *
+     * Acces a la pagination WeWeb
+     * -------------------------------------------------------------- */
+
+    /**
+     * Resout l'identifiant de la collection a paginer :
+     *   1. propriete `Source paginee` ;
+     *   2. auto-detection, en cherchant la collection dont `data` est la meme
+     *      reference de tableau que celle bindee sur `Collection`.
+     *
+     * Retourne un resultat structure : une panne doit etre identifiable, pas
+     * silencieusement convertie en absence de donnee.
+     */
+    const resolveCollection = () => {
+      const raw = props.content.paginatedSource;
+      if (typeof raw === 'string' && raw.length) {
+        const id = parsePaginatedSource(raw);
+        if (id) return { ok: true, id };
+        return describeError(ERROR_CODES.NO_SOURCE, `source=${raw}`);
+      }
 
       try {
         const collections = wwLib.$store?.getters?.['data/getCollections'];
-        if (!collections) return null;
         const target = props.content.items;
-        if (!Array.isArray(target)) return null;
-
-        for (const collection of Object.values(collections)) {
-          if (collection && collection.data === target) return collection.id;
+        if (collections && Array.isArray(target)) {
+          for (const collection of Object.values(collections)) {
+            if (collection && collection.data === target) return { ok: true, id: collection.id };
+          }
         }
       } catch (error) {
-        wwLib.wwLog?.error?.('[infinite-collection] auto-detection de la collection impossible', error);
+        return describeError(ERROR_CODES.NO_SOURCE, error?.message || String(error));
       }
 
-      return null;
+      return describeError(ERROR_CODES.NO_SOURCE);
     };
 
     const readPagination = collectionId => {
-      if (!collectionId) return null;
-      try {
-        return wwLib.wwCollection?.getPaginationOptions?.(collectionId) || null;
-      } catch (error) {
-        wwLib.wwLog?.error?.('[infinite-collection] lecture de la pagination impossible', error);
-        return null;
+      const api = wwLib.wwCollection;
+      if (!api || typeof api.getPaginationOptions !== 'function' || typeof api.setOffset !== 'function') {
+        return describeError(ERROR_CODES.API_UNAVAILABLE);
       }
+
+      let raw;
+      try {
+        raw = api.getPaginationOptions(collectionId);
+      } catch (error) {
+        return describeError(ERROR_CODES.PAGINATION_READ_FAILED, error?.message || String(error));
+      }
+
+      return validatePagination(raw);
     };
+
+    /** Metadonnees courantes, ou `null` si indisponibles. Ne leve pas d'erreur. */
+    const currentPagination = () => {
+      const source = resolveCollection();
+      if (!source.ok) return null;
+      const pagination = readPagination(source.id);
+      return pagination.ok ? pagination : null;
+    };
+
+    /* -------------------------------------------------------------- *
+     * Chargement
+     * -------------------------------------------------------------- */
 
     const clearFetchTimeout = () => {
       if (fetchTimeout === null) return;
@@ -147,80 +218,60 @@ export default {
       return sentinelRect.top <= rootRect.bottom + safeRootMargin();
     };
 
-    const onScroll = () => {
-      if (isSentinelNear()) loadMore();
-    };
-
-    const teardownWatchers = () => {
-      if (observer) {
-        observer.disconnect();
-        observer = null;
-      }
-      if (scrollTarget) {
-        scrollTarget.removeEventListener('scroll', onScroll);
-        scrollTarget = null;
-      }
-    };
-
-    const releaseLock = () => {
-      pendingOffset.value = null;
-      clearFetchTimeout();
-    };
-
     const loadMore = () => {
       if (isEditing.value) return;
-      if (pendingOffset.value !== null) return;
-      if (isExhausted.value) return;
+      if (!canLoad(state.value)) return;
 
-      const collectionId = resolveCollectionId();
-      const pagination = readPagination(collectionId);
-
-      // Sans acces a la pagination, on delegue au workflow via `loadMore`.
-      if (!pagination) {
-        emit('trigger-event', {
-          name: 'loadMore',
-          event: { offset: null, limit: null, total: null, page: null },
-        });
+      const source = resolveCollection();
+      if (!source.ok) {
+        fail(source.code);
         return;
       }
 
-      const plan = planNextFetch({
-        limit: pagination.limit,
-        offset: pagination.offset,
-        total: pagination.total,
-        loadedCount: accumulator.value.length,
-      });
+      const pagination = readPagination(source.id);
+      if (!pagination.ok) {
+        fail(pagination.code);
+        return;
+      }
+
+      const plan = planNextFetch(pagination);
 
       if (plan.action === 'error') {
-        isExhausted.value = true;
-        emit('trigger-event', { name: 'error', event: { message: plan.message } });
+        fail(plan.code);
         return;
       }
 
       if (plan.action === 'end') {
-        isExhausted.value = true;
-        emit('trigger-event', {
-          name: 'reachEnd',
-          event: { total: plan.total, loaded: accumulator.value.length },
-        });
+        finish(plan.total);
         return;
       }
 
+      if (!goTo(STATES.LOADING)) return;
       pendingOffset.value = plan.offset;
+
       clearFetchTimeout();
       fetchTimeout = setTimeout(() => {
-        pendingOffset.value = null;
         fetchTimeout = null;
+        // Le verrou et `pendingOffset` sont volontairement conserves : une reponse
+        // tardive correspondant a cet offset doit encore pouvoir etre accumulee.
+        if (state.value !== STATES.LOADING) return;
+        if (!goTo(STATES.TIMED_OUT)) return;
+        emit('trigger-event', {
+          name: 'error',
+          event: {
+            code: ERROR_CODES.FETCH_TIMEOUT,
+            message: describeError(ERROR_CODES.FETCH_TIMEOUT, `offset=${plan.offset}`).message,
+          },
+        });
       }, FETCH_TIMEOUT_MS);
 
       try {
-        wwLib.wwCollection.setOffset(collectionId, plan.offset);
+        wwLib.wwCollection.setOffset(source.id, plan.offset);
       } catch (error) {
-        releaseLock();
-        emit('trigger-event', {
-          name: 'error',
-          event: { message: `Impossible de paginer la collection : ${error?.message || error}` },
-        });
+        clearFetchTimeout();
+        pendingOffset.value = null;
+        state.value = STATES.IDLE;
+        fail(ERROR_CODES.SET_OFFSET_FAILED, error?.message || String(error));
         return;
       }
 
@@ -235,23 +286,37 @@ export default {
       });
     };
 
+    /* -------------------------------------------------------------- *
+     * Reception des pages
+     * -------------------------------------------------------------- */
+
+    const applyReset = (incoming, offset) => {
+      const result = resetItems({ incoming, offset, itemKey: itemKey.value });
+      accumulator.value = result.items;
+      keys.value = result.keys;
+      pendingOffset.value = null;
+      clearFetchTimeout();
+      // Un reset legitime doit pouvoir repartir, y compris depuis `failed`.
+      state.value = STATES.IDLE;
+    };
+
     watch(
       incomingItems,
       incoming => {
-        const collectionId = resolveCollectionId();
-        const pagination = readPagination(collectionId);
-        const currentOffset = pagination?.offset ?? 0;
+        const pagination = currentPagination();
+        const currentOffset = pagination ? pagination.offset : 0;
 
         const { mode, offset } = classifyIncoming({
           pendingOffset: pendingOffset.value,
           currentOffset,
         });
 
+        // Une page attendue dont l'offset ne correspond pas encore : l'integrer
+        // melangerait deux paginations.
+        if (mode === 'ignore') return;
+
         if (mode === 'reset') {
-          const result = resetItems({ incoming, offset, itemKey: itemKey.value });
-          accumulator.value = result.items;
-          keys.value = result.keys;
-          isExhausted.value = false;
+          applyReset(incoming, offset);
         } else {
           const result = mergeItems({
             current: accumulator.value,
@@ -263,23 +328,34 @@ export default {
           accumulator.value = result.items;
           keys.value = result.keys;
 
-          // Une page demandee qui n'apporte aucun element nouveau signifie que la
-          // collection est epuisee, meme si `total` annoncait davantage.
-          if (result.added === 0) {
-            isExhausted.value = true;
-            emit('trigger-event', {
-              name: 'reachEnd',
-              event: { total: pagination?.total ?? null, loaded: accumulator.value.length },
-            });
+          // La page attendue est arrivee : le verrou se libere, meme si le delai
+          // avait expire entre-temps.
+          pendingOffset.value = null;
+          clearFetchTimeout();
+          if (state.value === STATES.LOADING || state.value === STATES.TIMED_OUT) {
+            state.value = STATES.IDLE;
+          }
+
+          const verdict = classifyPage({
+            incomingCount: incoming.length,
+            added: result.added,
+            pagination,
+          });
+
+          if (verdict.outcome === 'error') {
+            fail(verdict.code);
+            return;
+          }
+          if (verdict.outcome === 'end') {
+            finish(pagination ? pagination.total : null);
+            return;
           }
         }
-
-        releaseLock();
 
         // La liste vient de grandir : si la sentinelle reste visible (page trop
         // courte pour remplir la zone de scroll), on enchaine immediatement.
         nextTick(() => {
-          if (isExhausted.value || pendingOffset.value !== null) return;
+          if (!canLoad(state.value)) return;
           if (isSentinelNear()) loadMore();
         });
       },
@@ -288,23 +364,49 @@ export default {
 
     // Un changement de cle invalide toutes les cles deja calculees.
     watch(itemKey, () => {
-      const result = resetItems({
-        incoming: incomingItems.value,
-        offset: 0,
-        itemKey: itemKey.value,
-      });
-      accumulator.value = result.items;
-      keys.value = result.keys;
-      isExhausted.value = false;
-      releaseLock();
+      applyReset(incomingItems.value, 0);
     });
+
+    // Changer de source est un reset legitime : l'etat d'erreur de l'ancienne source
+    // ne doit pas bloquer la nouvelle.
+    watch(
+      () => props.content.paginatedSource,
+      () => {
+        applyReset(incomingItems.value, 0);
+      }
+    );
+
+    /* -------------------------------------------------------------- *
+     * Detection de fin de liste
+     * -------------------------------------------------------------- */
+
+    const onScroll = () => {
+      if (isSentinelNear()) loadMore();
+    };
+
+    const clearObserverRetry = () => {
+      if (observerRetryTimer === null) return;
+      clearTimeout(observerRetryTimer);
+      observerRetryTimer = null;
+    };
+
+    const teardownWatchers = () => {
+      if (observer) {
+        observer.disconnect();
+        observer = null;
+      }
+      if (scrollTarget) {
+        scrollTarget.removeEventListener('scroll', onScroll);
+        scrollTarget = null;
+      }
+    };
 
     /**
      * Branche la detection de fin de liste.
      *
-     * `IntersectionObserver` est la voie normale. Un ecouteur `scroll` est ajoute en
-     * repli : il couvre les environnements sans IntersectionObserver et sert de
-     * filet si l'observer est cree avant que la mise en page soit calculee.
+     * `IntersectionObserver` est la voie normale. Un ecouteur `scroll` passif est
+     * ajoute en repli : il couvre les environnements sans IntersectionObserver et
+     * sert de filet si l'observer est cree avant que la mise en page soit calculee.
      */
     const createObserver = () => {
       teardownWatchers();
@@ -332,10 +434,11 @@ export default {
 
     /**
      * Les refs peuvent ne pas etre disponibles au premier `nextTick` (hydratation
-     * differee, parent masque au montage). On retente donc jusqu'a ce que le
-     * branchement reussisse, plutot que d'abandonner silencieusement.
+     * differee, parent masque au montage). On retente donc, plutot que d'abandonner
+     * silencieusement et de ne jamais rien charger.
      */
     const ensureObserver = (attempt = 0) => {
+      clearObserverRetry();
       if (createObserver()) return;
       if (attempt >= 10) {
         wwLib.wwLog?.error?.(
@@ -343,7 +446,10 @@ export default {
         );
         return;
       }
-      setTimeout(() => ensureObserver(attempt + 1), 50 * (attempt + 1));
+      observerRetryTimer = setTimeout(() => {
+        observerRetryTimer = null;
+        ensureObserver(attempt + 1);
+      }, 50 * (attempt + 1));
     };
 
     watch(() => props.content.rootMargin, () => nextTick(() => ensureObserver()));
@@ -352,6 +458,7 @@ export default {
 
     onBeforeUnmount(() => {
       teardownWatchers();
+      clearObserverRetry();
       clearFetchTimeout();
     });
 
@@ -379,9 +486,9 @@ export default {
 }
 
 .ic__item {
-  /* Le navigateur saute la mise en page et le rendu des elements hors ecran tout
-     en les conservant dans le DOM : pas de recyclage, donc pas de rupture de
-     z-index, de sticky ou de :nth-child. */
+  /* Le navigateur saute la mise en page et le rendu des elements hors ecran tout en
+     les conservant dans le DOM : pas de recyclage, donc pas de rupture de z-index,
+     de sticky ou de :nth-child. */
   content-visibility: auto;
   contain-intrinsic-size: auto var(--ic-item-height, 80px);
 }

@@ -33,10 +33,18 @@ function usedProperties(code) {
   return [...found];
 }
 
-/** Evenements emis via `name: 'X'` dans un emit('trigger-event', ...). */
+/**
+ * Evenements emis.
+ *
+ * On exige la forme `emit('trigger-event', { name: 'X'` afin de ne pas confondre
+ * avec les autres usages de `name:` dans le fichier.
+ */
 function emittedEvents(code) {
   const found = new Set();
-  for (const match of code.matchAll(/name:\s*'([A-Za-z][\w-]*)'/g)) found.add(match[1]);
+  // `[\s\S]` plutot que `\s` : les emissions sont souvent reparties sur plusieurs
+  // lignes, et un motif trop strict validerait un evenement jamais emis.
+  const pattern = /emit\(\s*'trigger-event'\s*,\s*\{[\s\S]{0,40}?name:\s*'([A-Za-z][\w-]*)'/g;
+  for (const match of code.matchAll(pattern)) found.add(match[1]);
   return [...found];
 }
 
@@ -97,4 +105,47 @@ test('aucune dependance runtime', async () => {
 
 test('la racine est un conteneur de scroll vertical', () => {
   assert.match(source, /overflow-y:\s*auto/);
+});
+
+/* ================================================================== *
+ * Contrat de pagination (plan V1)
+ * ================================================================== */
+
+test('aucun fallback workflow : loadMore n est jamais emis avec des valeurs nulles', () => {
+  // Le repli workflow a ete retire : une source introuvable doit produire `error`,
+  // pas un `loadMore` inexploitable reemis a chaque scroll.
+  assert.doesNotMatch(
+    source,
+    /name:\s*'loadMore'[\s\S]{0,200}offset:\s*null/,
+    'loadMore ne doit plus etre emis avec un offset nul'
+  );
+});
+
+test('l evenement error transporte un code exploitable', () => {
+  assert.match(source, /name:\s*'error'[\s\S]{0,120}code:/);
+  const errorEvent = config.triggerEvents.find(event => event.name === 'error');
+  assert.ok(errorEvent.event && 'code' in errorEvent.event, 'le code doit etre declare dans ww-config.js');
+});
+
+test('le timeout ne libere pas le verrou', () => {
+  // Regression critique : liberer `pendingOffset` au timeout fait classer la reponse
+  // tardive comme un reset, ce qui efface toutes les pages accumulees.
+  const timeoutBlock = source.slice(source.indexOf('fetchTimeout = setTimeout'));
+  const body = timeoutBlock.slice(0, timeoutBlock.indexOf('FETCH_TIMEOUT_MS'));
+  assert.doesNotMatch(body, /pendingOffset\.value\s*=\s*null/, 'le verrou doit etre conserve au timeout');
+});
+
+test('tous les timers sont annules au demontage', () => {
+  const marker = 'onBeforeUnmount(() => {';
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, 'onBeforeUnmount doit etre present');
+  const body = source.slice(start, source.indexOf('});', start) + 3);
+  for (const cleanup of ['teardownWatchers', 'clearObserverRetry', 'clearFetchTimeout']) {
+    assert.match(body, new RegExp(cleanup), `${cleanup} doit etre appele au demontage`);
+  }
+});
+
+test('la machine a etats est utilisee pour autoriser les chargements', () => {
+  assert.match(source, /canLoad\(state\.value\)/, 'le declenchement doit passer par canLoad');
+  assert.doesNotMatch(source, /isExhausted/, 'isExhausted doit avoir ete remplace par la machine a etats');
 });
