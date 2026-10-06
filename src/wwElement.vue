@@ -39,7 +39,7 @@ import {
 } from './logic.mjs';
 
 const FETCH_TIMEOUT_MS = 10000;
-const OBSERVER_MARGIN = '300px';
+const SCROLL_MARGIN = 300;
 
 export default {
   props: {
@@ -63,7 +63,7 @@ export default {
     let lastData = null;
     let fetchTimeout = null;
     let missingCollectionTimeout = null;
-    let observer = null;
+    let scrollCheckFrame = null;
 
     const collectionId = computed(() => {
       const value = props.content.collectionId;
@@ -220,6 +220,13 @@ export default {
         return;
       }
 
+      // Le bouton reste visible pour le debug, mais ne doit pas envoyer une requete
+      // que PostgREST refusera avec PGRST103 une fois le total couvert.
+      if (acceptedOffset.value !== null && acceptedOffset.value + entries.value.slice(acceptedOffset.value).length >= pagination.total) {
+        console.info('[infinite-collection] fin atteinte', `total=${pagination.total}`);
+        return;
+      }
+
       // Premier clic sans page acceptee : demander explicitement la page zero.
       // Ensuite, avancer strictement d'une limite depuis le dernier offset accepte.
       // Ce chemin ne consulte pas `status`: le bouton sert precisement a tester la
@@ -238,9 +245,7 @@ export default {
 
     const continueIfNeeded = () => {
       if (isManual.value || status.value !== STATUS.READY || request.value) return;
-      // Reobserver la sentinelle force un nouveau calcul d'intersection apres que la
-      // page a modifie la hauteur. Si elle reste visible, la page suivante s'enchaine.
-      nextTick(setupObserver);
+      nextTick(scheduleScrollCheck);
     };
 
     const processPage = (data, pagination, offset) => {
@@ -345,26 +350,62 @@ export default {
       { immediate: true }
     );
 
-    const setupObserver = () => {
-      if (observer) observer.disconnect();
-      observer = null;
-      if (isManual.value || !sentinel.value || typeof IntersectionObserver === 'undefined') return;
+    /** Retourne la limite basse du premier conteneur qui defile reellement. */
+    const scrollBoundary = () => {
+      if (!root.value || typeof window === 'undefined') return 0;
 
-      observer = new IntersectionObserver(
-        intersections => {
-          if (intersections.some(entry => entry.isIntersecting)) loadMore();
-        },
-        // `root: null` fonctionne aussi lorsque WeWeb porte le scroll sur un wrapper
-        // parent : l'intersection tient compte du clipping de tous les ancetres.
-        { root: null, rootMargin: `0px 0px ${OBSERVER_MARGIN} 0px`, threshold: 0 }
-      );
-      observer.observe(sentinel.value);
+      let element = root.value;
+      while (element && element !== document.body && element !== document.documentElement) {
+        const style = window.getComputedStyle(element);
+        const canScroll = ['auto', 'scroll', 'overlay'].includes(style.overflowY);
+        if (canScroll && element.scrollHeight > element.clientHeight + 1) {
+          return element.getBoundingClientRect().bottom;
+        }
+        element = element.parentElement;
+      }
+
+      return window.innerHeight;
     };
 
-    watch(isManual, () => nextTick(setupObserver));
-    onMounted(() => nextTick(setupObserver));
+    const checkScrollPosition = () => {
+      scrollCheckFrame = null;
+      if (isManual.value || request.value || status.value === STATUS.ENDED || !sentinel.value) return;
+      if (sentinel.value.getBoundingClientRect().top <= scrollBoundary() + SCROLL_MARGIN) {
+        console.info('[infinite-collection] seuil de scroll atteint');
+        loadMore();
+      }
+    };
+
+    const scheduleScrollCheck = () => {
+      if (isManual.value || scrollCheckFrame !== null || typeof window === 'undefined') return;
+      scrollCheckFrame = window.requestAnimationFrame(checkScrollPosition);
+    };
+
+    const teardownAutoScroll = () => {
+      if (typeof document !== 'undefined') document.removeEventListener('scroll', scheduleScrollCheck, true);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('resize', scheduleScrollCheck);
+        if (scrollCheckFrame !== null) window.cancelAnimationFrame(scrollCheckFrame);
+      }
+      scrollCheckFrame = null;
+    };
+
+    const setupAutoScroll = () => {
+      teardownAutoScroll();
+      if (isManual.value || typeof document === 'undefined' || typeof window === 'undefined') return;
+
+      // Le scroll d'un element ne remonte pas normalement. La capture sur document
+      // permet de recevoir celui de la racine, d'un wrapper WeWeb ou de la page.
+      document.addEventListener('scroll', scheduleScrollCheck, { capture: true, passive: true });
+      window.addEventListener('resize', scheduleScrollCheck, { passive: true });
+      console.info('[infinite-collection] chargement automatique actif');
+      scheduleScrollCheck();
+    };
+
+    watch(isManual, () => nextTick(setupAutoScroll));
+    onMounted(() => nextTick(setupAutoScroll));
     onBeforeUnmount(() => {
-      if (observer) observer.disconnect();
+      teardownAutoScroll();
       clearFetchTimeout();
       clearMissingCollectionTimeout();
       generation += 1;

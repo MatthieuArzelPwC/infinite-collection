@@ -46,22 +46,31 @@ test('chaque clic manuel demande explicitement l offset suivant', () => {
   assert.doesNotMatch(body, /planNextFetch/);
 });
 
+test('le bouton manuel n envoie pas d offset au dela du total', () => {
+  const start = source.indexOf('const onManualLoad');
+  const body = source.slice(start, source.indexOf('};', start) + 2);
+  assert.match(body, /acceptedOffset\.value \+ entries\.value\.slice\(acceptedOffset\.value\)\.length >= pagination\.total/);
+});
+
 test('le runtime n utilise qu un watcher principal de collection', () => {
   const watcherCount = [...source.matchAll(/\bwatch\(/g)].length;
   assert.equal(watcherCount, 2, 'un watcher de collection et un watcher de mode manuel');
   assert.match(source, /Un seul watcher gere atomiquement/);
 });
 
-test('le scroll utilise un seul IntersectionObserver compatible avec les wrappers WeWeb', () => {
-  assert.match(source, /new IntersectionObserver/);
-  assert.doesNotMatch(source, /addEventListener\(['"]scroll/);
+test('le mode automatique ecoute le scroll reel des wrappers WeWeb', () => {
+  assert.doesNotMatch(source, /IntersectionObserver/);
   assert.doesNotMatch(source, /ResizeObserver/);
-  assert.match(source, /root:\s*null/);
-  assert.match(source, /nextTick\(setupObserver\)/);
+  assert.match(source, /document\.addEventListener\('scroll', scheduleScrollCheck, \{ capture: true, passive: true \}\)/);
+  assert.match(source, /element\.scrollHeight > element\.clientHeight \+ 1/);
+  assert.match(source, /sentinel\.value\.getBoundingClientRect\(\)\.top <= scrollBoundary\(\) \+ SCROLL_MARGIN/);
+  assert.match(source, /requestAnimationFrame\(checkScrollPosition\)/);
 });
 
-test('le mode manuel empeche l installation de l observer', () => {
+test('le mode manuel empeche l installation de l ecoute du scroll', () => {
+  assert.match(source, /const setupAutoScroll/);
   assert.match(source, /if \(isManual\.value[^\n]*\) return;/);
+  assert.match(source, /teardownAutoScroll\(\)/);
 });
 
 test('le timeout conserve la requete en vol', () => {

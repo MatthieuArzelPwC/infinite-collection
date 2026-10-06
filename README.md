@@ -34,10 +34,10 @@ Affiche et accumule les pages d'une collection WeWeb paginee. Le composant utili
 
 ### Automatique
 
-Desactiver `Chargement manuel`. Le bouton disparait et un `IntersectionObserver` observe la sentinelle par rapport au viewport, en tenant compte du clipping des wrappers WeWeb, avec 300 px d'anticipation.
+Desactiver `Chargement manuel`. Le bouton disparait et le composant ecoute les evenements de scroll en capture afin de fonctionner que le scroll appartienne au composant, a un wrapper WeWeb ou a la page.
 
 - Une seule requete peut etre en vol.
-- Une nouvelle page est demandee quand la sentinelle approche du viewport.
+- Une nouvelle page est demandee quand la sentinelle approche a moins de 300 px du bas du conteneur qui defile reellement.
 - Si la liste reste trop courte apres une page, le composant enchaine jusqu'a remplir la zone visible ou atteindre la fin.
 
 ## Pagination
