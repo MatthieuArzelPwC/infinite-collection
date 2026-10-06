@@ -102,9 +102,15 @@ Avec `Chargement manuel` activé, un lien apparaît en fin de liste et la page s
 n'est chargée qu'au clic. Le défilement ne déclenche plus rien, et
 `Prechargement (ecrans)` est masqué.
 
-Le lien reste visible **tant que le total n'est pas couvert**, indépendamment de l'état
-interne : un refetch de la collection ne le fait pas disparaître alors qu'il reste des
-pages à charger.
+Le lien est visible **dans tous les cas sauf un** : quand la collection a été
+entièrement parcourue. Ni une erreur, ni un chargement en cours, ni des métadonnées
+indisponibles ne le font disparaître — c'est le seul moyen de progresser, il doit rester
+accessible.
+
+Sa visibilité dépend uniquement de l'état interne du composant, qui est réactif. Elle ne
+lit pas `getPaginationOptions()` : cet appel de fonction est hors du système réactif de
+Vue, et son résultat serait mis en cache au premier rendu, donc avant que la collection
+soit chargée.
 
 Utile pour diagnostiquer la pagination : chaque clic correspond à exactement une
 requête, ce qui rend l'observation dans l'onglet Network sans ambiguïté.

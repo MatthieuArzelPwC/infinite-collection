@@ -178,13 +178,13 @@ export function isLastPage({ limit, offset, total }) {
 /**
  * Vrai s'il reste des lignes a charger d'apres les metadonnees.
  *
- * Sert a decider l'affichage du declencheur manuel : il doit rester visible tant que
- * le total n'est pas couvert, independamment de l'etat interne du composant. Sans
- * cela, un refetch amont le ferait disparaitre alors qu'il reste des pages.
+ * En l'absence de metadonnees exploitables, retourne `true` : on ne peut pas prouver
+ * que la collection est terminee, et masquer le declencheur priverait l'utilisateur du
+ * seul moyen de progresser ET de voir l'erreur. Seule une preuve de fin le masque.
  */
 export function hasMorePages(pagination) {
   const valid = validatePagination(pagination);
-  if (!valid.ok) return false;
+  if (!valid.ok) return true;
   return !isLastPage(valid);
 }
 

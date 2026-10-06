@@ -608,10 +608,20 @@ test('hasMorePages devient faux sur la derniere page', () => {
   assert.equal(hasMorePages({ limit: 50, offset: 0, total: 0 }), false);
 });
 
-test('hasMorePages est faux sans metadonnees fiables', () => {
-  // Mieux vaut masquer le declencheur que proposer une action qui echouera.
-  assert.equal(hasMorePages(null), false);
-  assert.equal(hasMorePages({ limit: 0, offset: 0, total: 100 }), false);
+test('hasMorePages reste vrai sans metadonnees exploitables', () => {
+  // On ne peut pas prouver que la collection est terminee : masquer le declencheur
+  // priverait l utilisateur du seul moyen de progresser et de voir l erreur.
+  assert.equal(hasMorePages(null), true);
+  assert.equal(hasMorePages(undefined), true);
+  assert.equal(hasMorePages({}), true);
+  assert.equal(hasMorePages({ limit: 0, offset: 0, total: 100 }), true);
+  assert.equal(hasMorePages({ limit: 12, offset: 0, total: null }), true);
+  assert.equal(hasMorePages({ limit: 12, offset: 0 }), true);
+});
+
+test('hasMorePages n est faux que sur preuve de fin', () => {
+  assert.equal(hasMorePages({ limit: 50, offset: 450, total: 500 }), false);
+  assert.equal(hasMorePages({ limit: 50, offset: 0, total: 0 }), false);
 });
 
 /* ================================================================== *
@@ -651,4 +661,45 @@ test('resolveTriggerDistance corrige des parametres invalides', () => {
   assert.ok(resolveTriggerDistance({ viewportHeight: 600, itemHeight: 80, screens: 0 }) > 0);
   assert.ok(resolveTriggerDistance({ viewportHeight: 600, itemHeight: 80, screens: -1 }) > 0);
   assert.ok(resolveTriggerDistance({ viewportHeight: NaN, itemHeight: NaN, screens: NaN }) >= 100);
+});
+
+/* ================================================================== *
+ * Invariant : le declencheur manuel ne disparait jamais par accident
+ * ================================================================== */
+
+test('le declencheur reste visible dans tous les cas degrades', () => {
+  // Reproduit la condition de showManualTrigger. Cet invariant a ete casse deux fois :
+  // une fois par une dependance a l etat interne, une fois par une dependance a la
+  // validite des metadonnees. Un controle ne doit pas dependre d un diagnostic.
+  const visible = (state, pagination) => state !== STATES.ENDED && hasMorePages(pagination);
+
+  const degraded = [
+    [STATES.IDLE, { limit: 12, offset: 0, total: 95 }],
+    [STATES.LOADING, { limit: 12, offset: 0, total: 95 }],
+    [STATES.INITIALIZING, { limit: 12, offset: 0, total: 95 }],
+    [STATES.FAILED, { limit: 12, offset: 0, total: 95 }],
+    [STATES.TIMED_OUT, { limit: 12, offset: 0, total: 95 }],
+    [STATES.IDLE, null],
+    [STATES.IDLE, undefined],
+    [STATES.IDLE, {}],
+    [STATES.IDLE, { limit: 12, offset: 0 }],
+    [STATES.IDLE, { limit: null, offset: 0, total: 95 }],
+    [STATES.IDLE, { limit: 0, offset: 0, total: 95 }],
+  ];
+
+  for (const [state, pagination] of degraded) {
+    assert.equal(
+      visible(state, pagination),
+      true,
+      `le declencheur doit rester visible (etat=${state}, pagination=${JSON.stringify(pagination)})`
+    );
+  }
+});
+
+test('le declencheur disparait uniquement sur preuve de fin', () => {
+  const visible = (state, pagination) => state !== STATES.ENDED && hasMorePages(pagination);
+
+  assert.equal(visible(STATES.ENDED, { limit: 12, offset: 84, total: 95 }), false);
+  assert.equal(visible(STATES.IDLE, { limit: 50, offset: 450, total: 500 }), false);
+  assert.equal(visible(STATES.IDLE, { limit: 50, offset: 0, total: 0 }), false);
 });

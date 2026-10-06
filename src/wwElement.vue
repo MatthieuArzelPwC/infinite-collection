@@ -44,7 +44,6 @@ import {
   classifyIncoming,
   classifyPage,
   assessCollection,
-  hasMorePages,
   resolveItemHeight,
   resolveTriggerDistance,
   canLoad,
@@ -62,6 +61,18 @@ const COLLECTION_LOOKUP_GRACE_MS = 3000;
 
 // Hauteur de reserve avant toute mesure reelle. Sert uniquement au premier rendu.
 const DEFAULT_ITEM_HEIGHT = 80;
+
+const PREFIX = '[infinite-collection]';
+
+/**
+ * Journalisation directe via `console`.
+ *
+ * `wwLib.wwLog` n'existe dans aucun composant officiel WeWeb : l'appeler en optionnel
+ * (`wwLib.wwLog?.error?.()`) avalait silencieusement toutes les traces, y compris celles
+ * destinees au diagnostic.
+ */
+const log = (...args) => console.info(PREFIX, ...args);
+const logError = (...args) => console.error(PREFIX, ...args);
 
 export default {
   props: {
@@ -88,10 +99,6 @@ export default {
     // Incrementee a chaque changement de collection : un callback asynchrone de
     // l'ancienne source ne doit pas modifier l'etat de la nouvelle.
     const sourceGeneration = ref(0);
-
-    // Les metadonnees de pagination sont lues par appel de fonction, hors du systeme
-    // reactif de Vue. Ce compteur force la reevaluation des computed qui en dependent.
-    const paginationTick = ref(0);
 
     let fetchTimeout = null;
     let observer = null;
@@ -139,7 +146,7 @@ export default {
       try {
         return wwLib.$store?.getters?.['data/getCollections']?.[id] ?? null;
       } catch (error) {
-        wwLib.wwLog?.error?.('[infinite-collection] lecture du store impossible', error);
+        logError('lecture du store impossible', error);
         return null;
       }
     });
@@ -175,17 +182,26 @@ export default {
     });
 
     /**
-     * Le declencheur manuel reste visible tant que le total n'est pas couvert.
+     * Visibilite du declencheur manuel.
      *
-     * Il ne depend pas de l'etat interne : sinon un refetch amont, qui ramene l'etat a
-     * `initializing`, le ferait disparaitre alors qu'il reste des pages a charger.
+     * Regle : visible PAR DEFAUT, masque uniquement sur preuve que la collection est
+     * entierement chargee.
+     *
+     * Les versions precedentes conditionnaient l'affichage a des metadonnees valides et
+     * a un etat interne precis. Resultat : la moindre anomalie (total absent, limite
+     * nulle, refetch en cours) faisait disparaitre le bouton, privant l'utilisateur du
+     * seul moyen de progresser et de declencher un message d'erreur. Un controle ne doit
+     * pas dependre d'un diagnostic qui peut echouer.
      */
     const showManualTrigger = computed(() => {
       if (!isManual.value) return false;
-      if (state.value === STATES.FAILED || state.value === STATES.ENDED) return false;
-      // `paginationTick` force la reevaluation : les metadonnees vivent hors de Vue.
-      paginationTick.value;
-      return hasMorePages(currentPagination());
+
+      // Seule preuve acceptable de fin : la collection a ete entierement parcourue.
+      // On s'appuie sur l'etat, qui est reactif, et non sur une lecture directe des
+      // metadonnees : `getPaginationOptions()` est un appel de fonction hors du systeme
+      // reactif de Vue, dont le resultat serait mis en cache au premier rendu — donc
+      // avant que la collection soit chargee — et jamais reevalue.
+      return state.value !== STATES.ENDED;
     });
 
     /* -------------------------------------------------------------- *
@@ -348,8 +364,10 @@ export default {
 
       // Trace de diagnostic : rend visible dans la console ce que WeWeb annonce et ce
       // que le composant decide, sans avoir a instrumenter le code.
-      wwLib.wwLog?.log?.(
-        `[infinite-collection] limit=${pagination.limit} offset=${pagination.offset} total=${pagination.total} affiches=${accumulator.value.length} -> ${plan.action}${plan.offset !== undefined ? ` offset=${plan.offset}` : ''}`
+      log(
+        `limit=${pagination.limit} offset=${pagination.offset} total=${pagination.total}`,
+        `affiches=${accumulator.value.length} -> ${plan.action}`,
+        plan.offset !== undefined ? `offset=${plan.offset}` : ''
       );
 
       if (plan.action === 'error') {
@@ -420,8 +438,8 @@ export default {
      */
     const onManualLoad = () => {
       if (state.value === STATES.LOADING || state.value === STATES.TIMED_OUT) {
-        wwLib.wwLog?.error?.(
-          `[infinite-collection] requete precedente non confirmee (offset=${pendingOffset.value}) : deverrouillage sur action utilisateur.`
+        logError(
+          `requete precedente non confirmee (offset=${pendingOffset.value}) : deverrouillage sur action utilisateur.`
         );
         pendingOffset.value = null;
         clearFetchTimeout();
@@ -434,7 +452,7 @@ export default {
 
       if (!canLoad(state.value)) {
         // Seuls `ended` et `failed` arrivent ici, et le bouton est alors masque.
-        wwLib.wwLog?.error?.(`[infinite-collection] chargement impossible dans l etat "${state.value}".`);
+        logError(`chargement impossible dans l etat "${state.value}".`);
         return;
       }
 
@@ -636,12 +654,11 @@ export default {
       { immediate: true, deep: false }
     );
 
-    // Les metadonnees de pagination ont pu changer : reevaluer le declencheur manuel,
-    // mesurer la hauteur reelle et rebrancher la detection si le conteneur a change.
+    // La liste a change : mesurer la hauteur reelle d'un element et rebrancher la
+    // detection de defilement si le conteneur vient d'apparaitre.
     watch(
       entries,
       () => {
-        paginationTick.value += 1;
         nextTick(() => {
           measureItemHeight();
           observeItemHeight();
@@ -756,9 +773,7 @@ export default {
       clearObserverRetry();
       if (createObserver()) return;
       if (attempt >= 10) {
-        wwLib.wwLog?.error?.(
-          '[infinite-collection] impossible de brancher la detection de scroll : la racine du composant est introuvable.'
-        );
+        logError('impossible de brancher la detection de scroll : la racine du composant est introuvable.');
         return;
       }
       observerRetryTimer = setTimeout(() => {
@@ -769,7 +784,19 @@ export default {
 
     watch([preloadScreens, isManual], () => nextTick(() => ensureObserver()));
 
-    onMounted(() => nextTick(() => ensureObserver()));
+    onMounted(() => {
+      // Trace d'amorcage : permet de voir immediatement si la collection est resolue,
+      // ce que WeWeb annonce comme pagination, et si le declencheur sera visible.
+      const pagination = currentPagination();
+      log(
+        `monte | collection=${collectionId.value || 'AUCUNE'}`,
+        `| statut=${collectionStatus.value.status}`,
+        `| pagination=${pagination ? `limit=${pagination.limit} offset=${pagination.offset} total=${pagination.total}` : 'INDISPONIBLE'}`,
+        `| mode=${isManual.value ? 'manuel' : 'defilement'}`
+      );
+
+      nextTick(() => ensureObserver());
+    });
 
     onBeforeUnmount(() => {
       teardownWatchers();

@@ -107,7 +107,43 @@ test('un clic manuel ne peut jamais rester sans effet', () => {
   assert.match(body, /STATES\.LOADING/, 'un verrou non confirme doit etre relache');
   assert.match(body, /STATES\.TIMED_OUT/);
   assert.match(body, /STATES\.INITIALIZING/);
-  assert.match(body, /wwLog/, 'tout refus doit etre journalise');
+  assert.match(body, /logError/, 'tout refus doit etre journalise');
+});
+
+test('les traces passent par console, pas par une API supposee', () => {
+  // `wwLib.wwLog` n existe dans aucun composant officiel WeWeb : appele en optionnel,
+  // il avalait silencieusement toutes les traces de diagnostic.
+  // Hors commentaires : seules les lignes de code comptent.
+  const code = source
+    .split('\n')
+    .filter(line => !line.trim().startsWith('*') && !line.trim().startsWith('//'))
+    .join('\n');
+  assert.doesNotMatch(code, /wwLib\.wwLog/);
+  assert.match(code, /console\.(info|error)/);
+});
+
+test('le declencheur manuel ne depend que d un etat reactif', () => {
+  // Cause racine du bouton disparu : `getPaginationOptions()` est un appel de fonction,
+  // hors du systeme reactif de Vue. Le computed etait evalue au premier rendu, avant que
+  // la collection soit chargee, et son resultat restait en cache indefiniment.
+  const start = source.indexOf('const showManualTrigger');
+  const body = source.slice(start, source.indexOf('});', start));
+
+  assert.match(body, /state\.value !== STATES\.ENDED/);
+  assert.doesNotMatch(body, /currentPagination\(\)/, 'aucune lecture non reactive');
+  assert.doesNotMatch(body, /hasMorePages/, 'aucune lecture non reactive');
+});
+
+test('showManualTrigger ne lit pas la pagination de maniere non reactive', () => {
+  // Invariant : `getPaginationOptions()` est un appel de fonction. L appeler depuis un
+  // computed met en cache une valeur lue avant le chargement de la collection.
+  const start = source.indexOf('const showManualTrigger');
+  const body = source
+    .slice(start, source.indexOf('});', start))
+    .split('\n')
+    .filter(line => !line.trim().startsWith('//'))
+    .join('\n');
+  assert.doesNotMatch(body, /currentPagination\(\)|getPaginationOptions/);
 });
 
 test('aucune page recue n est silencieusement ignoree', () => {
@@ -144,10 +180,15 @@ test('le prechargement s exprime en hauteurs d ecran', () => {
   assert.ok(preloadScreens.options.min > 0);
 });
 
-test('le declencheur manuel ne depend pas de l etat interne', () => {
-  // Il doit rester visible tant que le total n est pas couvert : un refetch amont
-  // ramene l etat a `initializing` et le faisait disparaitre a tort.
-  assert.match(source, /hasMorePages\(currentPagination\(\)\)/);
+test('le declencheur manuel reste visible hors fin de collection', () => {
+  // Visible dans tous les etats sauf `ended` : ni une erreur, ni un chargement, ni une
+  // page initiale non resolue ne doivent le faire disparaitre.
+  const start = source.indexOf('const showManualTrigger');
+  const body = source.slice(start, source.indexOf('});', start));
+  assert.match(body, /state\.value !== STATES\.ENDED/);
+  for (const state of ['FAILED', 'LOADING', 'INITIALIZING', 'TIMED_OUT']) {
+    assert.doesNotMatch(body, new RegExp(`STATES\\.${state}`), `${state} ne doit pas masquer le declencheur`);
+  }
 });
 
 test('le conteneur de defilement reel est recherche', () => {
