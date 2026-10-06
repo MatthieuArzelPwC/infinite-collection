@@ -48,6 +48,15 @@ test('planNextFetch demande l offset suivant', () => {
   });
 });
 
+test('une collection affichee 12 sur 95 demande l offset 12', () => {
+  assert.deepEqual(planNextFetch({ limit: 12, offset: 0, total: 95 }), {
+    action: 'fetch',
+    offset: 12,
+    limit: 12,
+    total: 95,
+  });
+});
+
 test('planNextFetch termine sans requete superflue', () => {
   assert.deepEqual(planNextFetch({ limit: 50, offset: 100, total: 137 }), {
     action: 'end',

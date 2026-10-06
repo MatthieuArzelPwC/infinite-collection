@@ -29,7 +29,8 @@ Affiche et accumule les pages d'une collection WeWeb paginee. Le composant utili
 - Le scroll ne charge rien.
 - Pendant une requete, le bouton reste present mais est desactive.
 - Apres un timeout, la requete reste verrouillee pour ne pas sauter de page.
-- En fin de collection, le bouton reste present, desactive, avec le libelle `Fin de la collection`.
+- Le bouton de debug n'est jamais masque ou desactive par une decision de fin interne.
+- Chaque clic avance exactement d'une limite depuis le dernier offset accepte et appelle `setOffset`.
 
 ### Automatique
 

@@ -88,10 +88,11 @@ export default {
       return typeof value === 'string' && value.trim() ? value : 'Charger la suite';
     });
 
-    const manualDisabled = computed(() => !!request.value || status.value === STATUS.ENDED);
+    // Le bouton manuel est un outil de diagnostic : seule une requete deja en vol le
+    // desactive. Une decision `ended` ne doit jamais empecher de tester setOffset().
+    const manualDisabled = computed(() => !!request.value);
     const manualButtonLabel = computed(() => {
       if (request.value) return '...';
-      if (status.value === STATUS.ENDED) return 'Fin de la collection';
       return configuredLabel.value;
     });
 
@@ -211,11 +212,28 @@ export default {
     };
 
     const onManualLoad = () => {
-      if (request.value || status.value === STATUS.ENDED) return;
-      if (status.value === STATUS.FAILED) {
-        status.value = entries.value.length ? STATUS.READY : STATUS.INITIALIZING;
+      if (request.value) return;
+
+      const pagination = readPagination();
+      if (!pagination.ok) {
+        emitError(pagination.code, pagination.message);
+        return;
       }
-      loadMore();
+
+      // Premier clic sans page acceptee : demander explicitement la page zero.
+      // Ensuite, avancer strictement d'une limite depuis le dernier offset accepte.
+      // Ce chemin ne consulte pas `status`: le bouton sert precisement a tester la
+      // capacite native de WeWeb a charger la page suivante.
+      const nextOffset = acceptedOffset.value === null ? 0 : acceptedOffset.value + pagination.limit;
+      console.info(
+        '[infinite-collection] chargement manuel',
+        `offset=${nextOffset}`,
+        `limit=${pagination.limit}`,
+        `total=${pagination.total}`,
+        `affiches=${entries.value.length}`
+      );
+      status.value = STATUS.READY;
+      requestPage(nextOffset);
     };
 
     const continueIfNeeded = () => {

@@ -30,9 +30,20 @@ test('le bouton manuel est rendu uniquement selon le mode et apres les elements'
   assert.doesNotMatch(source, /position:\s*sticky/);
 });
 
-test('une requete en vol desactive le bouton sans le masquer', () => {
+test('seule une requete en vol desactive le bouton de debug', () => {
   assert.match(source, /:disabled="manualDisabled"/);
-  assert.match(source, /manualDisabled\s*=\s*computed\(\(\)\s*=>\s*!!request\.value/);
+  assert.match(source, /manualDisabled\s*=\s*computed\(\(\)\s*=>\s*!!request\.value\)/);
+  assert.doesNotMatch(source, /manualDisabled[\s\S]{0,100}STATUS\.ENDED/);
+  assert.doesNotMatch(source, /Fin de la collection/);
+});
+
+test('chaque clic manuel demande explicitement l offset suivant', () => {
+  const start = source.indexOf('const onManualLoad');
+  const body = source.slice(start, source.indexOf('};', start) + 2);
+  assert.match(body, /acceptedOffset\.value \+ pagination\.limit/);
+  assert.match(body, /requestPage\(nextOffset\)/);
+  assert.doesNotMatch(body, /STATUS\.ENDED/);
+  assert.doesNotMatch(body, /planNextFetch/);
 });
 
 test('le runtime n utilise qu un watcher principal de collection', () => {
