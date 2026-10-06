@@ -37,19 +37,25 @@ test('seule une requete en vol desactive le bouton de debug', () => {
   assert.doesNotMatch(source, /Fin de la collection/);
 });
 
-test('chaque clic manuel demande explicitement l offset suivant', () => {
+test('le clic manuel utilise le meme chemin de pagination que le scroll', () => {
   const start = source.indexOf('const onManualLoad');
   const body = source.slice(start, source.indexOf('};', start) + 2);
-  assert.match(body, /acceptedOffset\.value \+ pagination\.limit/);
-  assert.match(body, /requestPage\(nextOffset\)/);
+  assert.match(body, /loadMore\('manuel'\)/);
   assert.doesNotMatch(body, /STATUS\.ENDED/);
-  assert.doesNotMatch(body, /planNextFetch/);
 });
 
-test('le bouton manuel n envoie pas d offset au dela du total', () => {
-  const start = source.indexOf('const onManualLoad');
+test('le bouton ne depasse le total qu apres la vraie derniere page', () => {
+  const start = source.indexOf('const loadMore');
   const body = source.slice(start, source.indexOf('};', start) + 2);
-  assert.match(body, /acceptedOffset\.value \+ entries\.value\.slice\(acceptedOffset\.value\)\.length >= pagination\.total/);
+  assert.match(body, /planNextFetch/);
+  assert.match(body, /plan\.action === 'end'/);
+  assert.match(body, /offset: acceptedOffset\.value \?\? pagination\.offset/);
+  assert.doesNotMatch(body, /entries\.value\.length\s*>?=\s*pagination\.total/);
+});
+
+test('le scroll appelle le meme chemin de pagination avec l origine scroll', () => {
+  assert.match(source, /loadMore\('scroll'\)/);
+  assert.equal([...source.matchAll(/wwLib\.wwCollection\.setOffset/g)].length, 1);
 });
 
 test('le runtime n utilise qu un watcher principal de collection', () => {
@@ -65,6 +71,15 @@ test('le mode automatique ecoute le scroll reel des wrappers WeWeb', () => {
   assert.match(source, /element\.scrollHeight > element\.clientHeight \+ 1/);
   assert.match(source, /sentinel\.value\.getBoundingClientRect\(\)\.top <= scrollBoundary\(\) \+ SCROLL_MARGIN/);
   assert.match(source, /requestAnimationFrame\(checkScrollPosition\)/);
+});
+
+test('ni le clic ni le scroll ne sont bloques par un etat ended stale', () => {
+  const loadMoreStart = source.indexOf('const loadMore');
+  const loadMoreBody = source.slice(loadMoreStart, source.indexOf('};', loadMoreStart) + 2);
+  const checkStart = source.indexOf('const checkScrollPosition');
+  const checkBody = source.slice(checkStart, source.indexOf('};', checkStart) + 2);
+  assert.doesNotMatch(loadMoreBody, /STATUS\.ENDED/);
+  assert.doesNotMatch(checkBody, /STATUS\.ENDED/);
 });
 
 test('le mode manuel empeche l installation de l ecoute du scroll', () => {

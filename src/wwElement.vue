@@ -156,6 +156,16 @@ export default {
         return;
       }
 
+      if (acceptedOffset.value !== null && acceptedOffset.value + pagination.limit >= pagination.total) {
+        console.info(
+          '[infinite-collection] fin reelle atteinte',
+          `offset=${acceptedOffset.value}`,
+          `limit=${pagination.limit}`,
+          `total=${pagination.total}`
+        );
+        return;
+      }
+
       const currentGeneration = generation;
       request.value = { collectionId: collectionId.value, offset, generation: currentGeneration };
       status.value = STATUS.LOADING;
@@ -184,10 +194,11 @@ export default {
       });
     };
 
-    const loadMore = () => {
-      if (request.value || status.value === STATUS.ENDED) return;
+    const loadMore = trigger => {
+      if (request.value) return;
 
       if (status.value === STATUS.INITIALIZING || entries.value.length === 0) {
+        console.info('[infinite-collection] demande de page', `origine=${trigger}`, 'offset=0');
         requestPage(0);
         return;
       }
@@ -207,40 +218,21 @@ export default {
       } else if (plan.action === 'end') {
         finish(plan.total);
       } else {
+        console.info(
+          '[infinite-collection] demande de page',
+          `origine=${trigger}`,
+          `offset=${plan.offset}`,
+          `limit=${plan.limit}`,
+          `total=${plan.total}`
+        );
         requestPage(plan.offset);
       }
     };
 
     const onManualLoad = () => {
       if (request.value) return;
-
-      const pagination = readPagination();
-      if (!pagination.ok) {
-        emitError(pagination.code, pagination.message);
-        return;
-      }
-
-      // Le bouton reste visible pour le debug, mais ne doit pas envoyer une requete
-      // que PostgREST refusera avec PGRST103 une fois le total couvert.
-      if (acceptedOffset.value !== null && acceptedOffset.value + entries.value.slice(acceptedOffset.value).length >= pagination.total) {
-        console.info('[infinite-collection] fin atteinte', `total=${pagination.total}`);
-        return;
-      }
-
-      // Premier clic sans page acceptee : demander explicitement la page zero.
-      // Ensuite, avancer strictement d'une limite depuis le dernier offset accepte.
-      // Ce chemin ne consulte pas `status`: le bouton sert precisement a tester la
-      // capacite native de WeWeb a charger la page suivante.
-      const nextOffset = acceptedOffset.value === null ? 0 : acceptedOffset.value + pagination.limit;
-      console.info(
-        '[infinite-collection] chargement manuel',
-        `offset=${nextOffset}`,
-        `limit=${pagination.limit}`,
-        `total=${pagination.total}`,
-        `affiches=${entries.value.length}`
-      );
       status.value = STATUS.READY;
-      requestPage(nextOffset);
+      loadMore('manuel');
     };
 
     const continueIfNeeded = () => {
@@ -249,6 +241,13 @@ export default {
     };
 
     const processPage = (data, pagination, offset) => {
+      console.info(
+        '[infinite-collection] page recue',
+        `offset=${offset}`,
+        `taille=${data.length}`,
+        `limit=${pagination.limit}`,
+        `total=${pagination.total}`
+      );
       const applied = applyPage(entries.value, data, offset);
       if (!applied.ok) {
         emitError(applied.code, `offset=${offset}, loaded=${entries.value.length}`);
@@ -369,10 +368,10 @@ export default {
 
     const checkScrollPosition = () => {
       scrollCheckFrame = null;
-      if (isManual.value || request.value || status.value === STATUS.ENDED || !sentinel.value) return;
+      if (isManual.value || request.value || !sentinel.value) return;
       if (sentinel.value.getBoundingClientRect().top <= scrollBoundary() + SCROLL_MARGIN) {
         console.info('[infinite-collection] seuil de scroll atteint');
-        loadMore();
+        loadMore('scroll');
       }
     };
 

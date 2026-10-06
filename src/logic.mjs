@@ -107,20 +107,22 @@ export function applyPage(current = [], incoming = [], offset = 0) {
   return { ok: true, items: [...prefix, ...page] };
 }
 
-/** Classe une page avec l'offset effectivement demande, jamais avec un offset stale. */
+/**
+ * Classe une page avec la pagination WeWeb.
+ *
+ * Le tableau expose par le store peut etre transforme ou deja accumule par WeWeb. Sa
+ * longueur n'est donc pas une preuve de couverture. La fin suit le contrat du
+ * Paginator officiel : la page courante est la derniere si offset + limit >= total.
+ */
 export function classifyPage({ incomingCount, offset, limit, total }) {
   const valid = validatePagination({ offset, limit, total });
   if (!valid.ok) return { outcome: 'error', code: valid.code };
 
-  const covered = valid.offset + incomingCount;
   if (incomingCount === 0) {
-    return valid.total === 0 || covered >= valid.total
+    return valid.total === 0 || valid.offset >= valid.total
       ? { outcome: 'end' }
       : { outcome: 'error', code: ERROR_CODES.EMPTY_PAGE };
   }
-  if (covered >= valid.total) return { outcome: 'end' };
-  if (valid.offset + valid.limit >= valid.total) {
-    return { outcome: 'error', code: ERROR_CODES.INCOMPLETE_PAGE };
-  }
+  if (valid.offset + valid.limit >= valid.total) return { outcome: 'end' };
   return { outcome: 'continue' };
 }

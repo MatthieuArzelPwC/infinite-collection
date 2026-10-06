@@ -29,8 +29,8 @@ Affiche et accumule les pages d'une collection WeWeb paginee. Le composant utili
 - Le scroll ne charge rien.
 - Pendant une requete, le bouton reste present mais est desactive.
 - Apres un timeout, la requete reste verrouillee pour ne pas sauter de page.
-- Le bouton de debug n'est jamais masque ou desactive par une decision de fin interne.
-- Chaque clic avance exactement d'une limite depuis le dernier offset accepte et appelle `setOffset`.
+- Le bouton de debug n'est jamais masque, desactive ou bloque par une decision de fin interne.
+- Chaque clic utilise le meme chemin de pagination que le scroll : il avance d'une limite depuis le dernier offset accepte et appelle `setOffset` si une page existe.
 
 ### Automatique
 
@@ -50,7 +50,7 @@ L'identifiant selectionne sert a :
 
 Le store est une API interne WeWeb. Son acces est isole dans un seul `computed`.
 
-Les pages sont placees par position absolue. Le composant refuse les trous et ne tente pas de cohabiter avec un Paginator ou un workflow pilotant le meme offset.
+Les pages sont placees par position absolue. Le composant refuse les trous et ne tente pas de cohabiter avec un Paginator ou un workflow pilotant le meme offset. La fin est determinee par `offset + limit >= total`, comme dans le Paginator WeWeb ; elle n'est jamais deduite du nombre d'elements exposes par le store.
 
 ## Evenements
 

@@ -57,6 +57,17 @@ test('une collection affichee 12 sur 95 demande l offset 12', () => {
   });
 });
 
+test('la pagination 20 sur 95 demande successivement 20 40 60 et 80', () => {
+  const offsets = [];
+  for (const offset of [0, 20, 40, 60]) {
+    const plan = planNextFetch({ limit: 20, offset, total: 95 });
+    assert.equal(plan.action, 'fetch');
+    offsets.push(plan.offset);
+  }
+  assert.deepEqual(offsets, [20, 40, 60, 80]);
+  assert.equal(planNextFetch({ limit: 20, offset: 80, total: 95 }).action, 'end');
+});
+
 test('planNextFetch termine sans requete superflue', () => {
   assert.deepEqual(planNextFetch({ limit: 50, offset: 100, total: 137 }), {
     action: 'end',
@@ -91,16 +102,20 @@ test('classifyPage continue sur une page intermediaire', () => {
   });
 });
 
-test('classifyPage termine avec la taille reellement recue', () => {
+test('classifyPage termine selon offset plus limite', () => {
   assert.deepEqual(classifyPage({ incomingCount: 37, offset: 100, limit: 50, total: 137 }), {
     outcome: 'end',
   });
 });
 
-test('classifyPage refuse une derniere page trop courte', () => {
+test('classifyPage ne deduit pas la fin de la taille du tableau WeWeb', () => {
   const result = classifyPage({ incomingCount: 10, offset: 100, limit: 50, total: 137 });
-  assert.equal(result.outcome, 'error');
-  assert.equal(result.code, ERROR_CODES.INCOMPLETE_PAGE);
+  assert.equal(result.outcome, 'end');
+});
+
+test('95 elements exposes ne terminent pas une pagination encore a offset zero', () => {
+  const result = classifyPage({ incomingCount: 95, offset: 0, limit: 20, total: 95 });
+  assert.equal(result.outcome, 'continue');
 });
 
 test('classifyPage refuse une page vide avant la fin', () => {
