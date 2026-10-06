@@ -6,11 +6,8 @@ const WW_FLEXBOX_TYPE = 'b783dc65-d528-4f74-8c14-e27c934c39b1';
 const collectionHelp =
   "Collection a afficher et a paginer. Un seul choix suffit : le composant en lit les donnees, la limite, l'offset et le total.\n\nLa collection DOIT avoir une limite configuree (ex: 50) : c'est elle qui active la pagination serveur.";
 
-const preloadScreensHelp =
-  "Quantite de contenu a precharger, exprimee en hauteurs de zone visible.\n\n1 = charger la page suivante lorsqu'il reste environ un ecran de contenu sous le point de defilement. Augmenter pour anticiper davantage, au prix de requetes plus precoces.\n\nLa distance en pixels est calculee automatiquement a partir de la hauteur reelle du composant : il n'y a pas de valeur en pixels a saisir.";
-
 const manualLoadHelp =
-  "Affiche un lien cliquable en fin de liste pour charger la page suivante a la demande.\n\nActive par defaut : le chargement au defilement est en cours de mise au point. Un clic correspond a exactement une requete, ce qui rend le diagnostic sans ambiguite.";
+  "Affiche un bouton apres le dernier element pour charger la page suivante. En mode manuel, le defilement ne declenche aucune requete.";
 
 export default {
   options: {
@@ -76,7 +73,6 @@ export default {
       section: 'settings',
       type: 'OnOff',
       bindable: true,
-      // Actif par defaut : le chargement au defilement reste a valider dans le studio.
       defaultValue: true,
       /* wwEditor:start */
       bindingValidation: {
@@ -103,31 +99,6 @@ export default {
       bindingValidation: {
         type: 'string',
         tooltip: 'Texte du lien de chargement manuel.',
-      },
-      /* wwEditor:end */
-    },
-    preloadScreens: {
-      label: {
-        en: 'Preload (screens)',
-        fr: 'Prechargement (ecrans)',
-      },
-      section: 'settings',
-      type: 'Number',
-      bindable: true,
-      defaultValue: 1,
-      options: {
-        min: 0.25,
-        max: 5,
-        step: 0.25,
-      },
-      hidden: content => !!content.manualLoad,
-      /* wwEditor:start */
-      bindingValidation: {
-        type: 'number',
-        tooltip: preloadScreensHelp,
-      },
-      propertyHelp: {
-        tooltip: preloadScreensHelp,
       },
       /* wwEditor:end */
     },
