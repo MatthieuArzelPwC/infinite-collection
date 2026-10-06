@@ -97,10 +97,38 @@ test('le libelle du chargement manuel est masque hors mode manuel', () => {
   assert.equal(manualLoadLabel.hidden({ manualLoad: true }), false);
 });
 
-test('la distance de declenchement est masquee en mode manuel', () => {
-  const { rootMargin } = config.properties;
-  assert.equal(rootMargin.hidden({ manualLoad: true }), true);
-  assert.equal(rootMargin.hidden({ manualLoad: false }), false);
+test('le prechargement est masque en mode manuel', () => {
+  const { preloadScreens } = config.properties;
+  assert.equal(preloadScreens.hidden({ manualLoad: true }), true);
+  assert.equal(preloadScreens.hidden({ manualLoad: false }), false);
+});
+
+test('aucun reglage en pixels n est demande a l utilisateur', () => {
+  // La hauteur d un element est mesuree, et la distance de declenchement derivee de
+  // la hauteur visible : ni l une ni l autre ne peut etre devinee a la main.
+  assert.equal(config.properties.estimatedItemHeight, undefined);
+  assert.equal(config.properties.rootMargin, undefined);
+  assert.match(source, /measureItemHeight/);
+  assert.match(source, /resolveTriggerDistance/);
+});
+
+test('le prechargement s exprime en hauteurs d ecran', () => {
+  const { preloadScreens } = config.properties;
+  assert.equal(preloadScreens.defaultValue, 1);
+  assert.ok(preloadScreens.options.min > 0);
+});
+
+test('le declencheur manuel ne depend pas de l etat interne', () => {
+  // Il doit rester visible tant que le total n est pas couvert : un refetch amont
+  // ramene l etat a `initializing` et le faisait disparaitre a tort.
+  assert.match(source, /hasMorePages\(currentPagination\(\)\)/);
+});
+
+test('le conteneur de defilement reel est recherche', () => {
+  // WeWeb applique la hauteur du studio a un wrapper parent : observer la racine du
+  // composant ne declenche alors jamais le chargement.
+  assert.match(source, /findScrollContainer/);
+  assert.match(source, /parentElement/);
 });
 
 test('le chargement n est plus bloque en mode edition', () => {
@@ -233,4 +261,13 @@ test('les codes produits par logic.mjs sont relayes au workflow', () => {
   for (const relay of ['fail(verdict.code)', 'fail(pagination.code)', 'fail(plan.code)']) {
     assert.ok(source.includes(relay), `${relay} doit relayer le code au workflow`);
   }
+});
+
+test('un clic manuel aboutit meme si l etat est encore initializing', () => {
+  // Un declencheur visible mais sans effet est une panne silencieuse.
+  const marker = 'const onManualLoad';
+  const start = source.indexOf(marker);
+  const body = source.slice(start, start + 500);
+  assert.match(body, /STATES\.INITIALIZING/);
+  assert.match(body, /STATES\.IDLE/);
 });

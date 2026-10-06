@@ -9,11 +9,8 @@ const collectionHelp =
 const itemKeyHelp =
   "Nom du champ qui identifie un element de maniere unique (ex: `id`), idealement la cle primaire. La valeur doit etre scalaire (texte, nombre, booleen), stable et unique dans toute la collection. Une cle objet ou absente fait retomber sur l'index absolu, dont la deduplication est moins fiable.";
 
-const estimatedItemHeightHelp =
-  "Hauteur approximative d'un element en pixels. Alimente `contain-intrinsic-size` pour que le navigateur dimensionne la barre de scroll sans calculer la mise en page des elements hors ecran. Une valeur approximative suffit.";
-
-const rootMarginHelp =
-  "Distance en pixels avant la fin de la liste a laquelle le chargement de la page suivante est declenche. Plus la valeur est elevee, plus le chargement est anticipe.";
+const preloadScreensHelp =
+  "Quantite de contenu a precharger, exprimee en hauteurs de zone visible.\n\n1 = charger la page suivante lorsqu'il reste environ un ecran de contenu sous le point de defilement. Augmenter pour anticiper davantage, au prix de requetes plus precoces.\n\nLa distance en pixels est calculee automatiquement a partir de la hauteur reelle du composant : il n'y a pas de valeur en pixels a saisir.";
 
 const manualLoadHelp =
   "Affiche un lien cliquable en fin de liste pour charger la page suivante a la demande, au lieu de la charger automatiquement au defilement.\n\nUtile pour diagnostiquer la pagination, ou lorsque le defilement automatique n'est pas souhaite.";
@@ -133,52 +130,28 @@ export default {
       },
       /* wwEditor:end */
     },
-    estimatedItemHeight: {
+    preloadScreens: {
       label: {
-        en: 'Estimated item height',
-        fr: 'Hauteur estimee d un element',
+        en: 'Preload (screens)',
+        fr: 'Prechargement (ecrans)',
       },
       section: 'settings',
       type: 'Number',
       bindable: true,
-      defaultValue: 80,
+      defaultValue: 1,
       options: {
-        min: 1,
-        max: 2000,
-        step: 1,
-      },
-      /* wwEditor:start */
-      bindingValidation: {
-        type: 'number',
-        tooltip: estimatedItemHeightHelp,
-      },
-      propertyHelp: {
-        tooltip: estimatedItemHeightHelp,
-      },
-      /* wwEditor:end */
-    },
-    rootMargin: {
-      label: {
-        en: 'Trigger distance',
-        fr: 'Distance de declenchement',
-      },
-      section: 'settings',
-      type: 'Number',
-      bindable: true,
-      defaultValue: 300,
-      options: {
-        min: 0,
-        max: 3000,
-        step: 50,
+        min: 0.25,
+        max: 5,
+        step: 0.25,
       },
       hidden: content => !!content.manualLoad,
       /* wwEditor:start */
       bindingValidation: {
         type: 'number',
-        tooltip: rootMarginHelp,
+        tooltip: preloadScreensHelp,
       },
       propertyHelp: {
-        tooltip: rootMarginHelp,
+        tooltip: preloadScreensHelp,
       },
       /* wwEditor:end */
     },

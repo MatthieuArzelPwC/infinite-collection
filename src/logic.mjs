@@ -200,6 +200,50 @@ export function isLastPage({ limit, offset, total }) {
   return valid.offset + valid.limit >= valid.total;
 }
 
+/**
+ * Vrai s'il reste des lignes a charger d'apres les metadonnees.
+ *
+ * Sert a decider l'affichage du declencheur manuel : il doit rester visible tant que
+ * le total n'est pas couvert, independamment de l'etat interne du composant. Sans
+ * cela, un refetch amont le ferait disparaitre alors qu'il reste des pages.
+ */
+export function hasMorePages(pagination) {
+  const valid = validatePagination(pagination);
+  if (!valid.ok) return false;
+  return !isLastPage(valid);
+}
+
+/**
+ * Hauteur de reserve d'un element, en pixels.
+ *
+ * Alimente `contain-intrinsic-size`. La mesure reelle est preferee des qu'au moins un
+ * element a ete rendu ; la valeur par defaut ne sert qu'au premier rendu.
+ */
+export function resolveItemHeight({ measured, fallback = 80 }) {
+  if (Number.isFinite(measured) && measured > 0) return Math.round(measured);
+  if (Number.isFinite(fallback) && fallback > 0) return Math.round(fallback);
+  return 80;
+}
+
+/**
+ * Distance de declenchement, en pixels.
+ *
+ * Derivee de la hauteur visible du conteneur plutot que saisie a la main : une marge
+ * fixe est soit inutile sur un grand conteneur, soit insuffisante sur un petit.
+ * On precharge `screens` fois la hauteur visible, avec un plancher qui garantit le
+ * declenchement meme dans un conteneur tres court.
+ */
+export function resolveTriggerDistance({ viewportHeight, itemHeight, screens = 1 }) {
+  const safeScreens = Number.isFinite(screens) && screens > 0 ? screens : 1;
+  const height = Number.isFinite(viewportHeight) && viewportHeight > 0 ? viewportHeight : 0;
+  const item = Number.isFinite(itemHeight) && itemHeight > 0 ? itemHeight : 80;
+
+  // Au moins deux elements d'avance, sinon le chargement arrive trop tard sur un
+  // conteneur de la hauteur d'une seule ligne.
+  const floor = item * 2;
+  return Math.max(Math.round(height * safeScreens), floor, 100);
+}
+
 /* ------------------------------------------------------------------ *
  * Disponibilite de la collection
  * ------------------------------------------------------------------ */

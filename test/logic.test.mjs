@@ -21,6 +21,9 @@ import {
   classifyIncoming,
   classifyPage,
   assessCollection,
+  hasMorePages,
+  resolveItemHeight,
+  resolveTriggerDistance,
   canTransition,
   canLoad,
   transition,
@@ -632,4 +635,64 @@ test('changement de filtre amont : reset de l accumulateur', () => {
   const after = resetItems({ incoming: [{ id: 99 }], offset: 0, itemKey: 'id' });
   assert.equal(after.items.length, 1);
   assert.equal(after.items[0].data.id, 99);
+});
+
+/* ================================================================== *
+ * Visibilite du declencheur manuel
+ * ================================================================== */
+
+test('hasMorePages reste vrai tant que le total n est pas couvert', () => {
+  assert.equal(hasMorePages({ limit: 50, offset: 0, total: 500 }), true);
+  assert.equal(hasMorePages({ limit: 50, offset: 400, total: 500 }), true);
+});
+
+test('hasMorePages devient faux sur la derniere page', () => {
+  assert.equal(hasMorePages({ limit: 50, offset: 450, total: 500 }), false);
+  assert.equal(hasMorePages({ limit: 50, offset: 0, total: 30 }), false);
+  assert.equal(hasMorePages({ limit: 50, offset: 0, total: 0 }), false);
+});
+
+test('hasMorePages est faux sans metadonnees fiables', () => {
+  // Mieux vaut masquer le declencheur que proposer une action qui echouera.
+  assert.equal(hasMorePages(null), false);
+  assert.equal(hasMorePages({ limit: 0, offset: 0, total: 100 }), false);
+});
+
+/* ================================================================== *
+ * Hauteur et distance de declenchement
+ * ================================================================== */
+
+test('resolveItemHeight prefere la mesure reelle', () => {
+  assert.equal(resolveItemHeight({ measured: 123.4, fallback: 80 }), 123);
+});
+
+test('resolveItemHeight retombe sur la valeur par defaut avant mesure', () => {
+  assert.equal(resolveItemHeight({ measured: null, fallback: 80 }), 80);
+  assert.equal(resolveItemHeight({ measured: 0, fallback: 80 }), 80);
+  assert.equal(resolveItemHeight({ measured: NaN, fallback: 80 }), 80);
+  assert.equal(resolveItemHeight({ measured: -10, fallback: 80 }), 80);
+  assert.equal(resolveItemHeight({}), 80);
+});
+
+test('resolveTriggerDistance suit la hauteur visible', () => {
+  assert.equal(resolveTriggerDistance({ viewportHeight: 600, itemHeight: 80, screens: 1 }), 600);
+  assert.equal(resolveTriggerDistance({ viewportHeight: 600, itemHeight: 80, screens: 2 }), 1200);
+  assert.equal(resolveTriggerDistance({ viewportHeight: 1000, itemHeight: 80, screens: 0.5 }), 500);
+});
+
+test('resolveTriggerDistance garde un plancher sur un conteneur tres court', () => {
+  // Un conteneur de 100px ne doit pas declencher le chargement trop tard.
+  const distance = resolveTriggerDistance({ viewportHeight: 100, itemHeight: 80, screens: 1 });
+  assert.ok(distance >= 160, `plancher de deux elements attendu, recu ${distance}`);
+});
+
+test('resolveTriggerDistance reste utilisable sans mesure', () => {
+  const distance = resolveTriggerDistance({ viewportHeight: 0, itemHeight: 0, screens: 1 });
+  assert.ok(distance >= 100, 'une distance minimale doit rester garantie');
+});
+
+test('resolveTriggerDistance corrige des parametres invalides', () => {
+  assert.ok(resolveTriggerDistance({ viewportHeight: 600, itemHeight: 80, screens: 0 }) > 0);
+  assert.ok(resolveTriggerDistance({ viewportHeight: 600, itemHeight: 80, screens: -1 }) > 0);
+  assert.ok(resolveTriggerDistance({ viewportHeight: NaN, itemHeight: NaN, screens: NaN }) >= 100);
 });

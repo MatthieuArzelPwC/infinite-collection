@@ -44,6 +44,9 @@ import {
   classifyIncoming,
   classifyPage,
   assessCollection,
+  hasMorePages,
+  resolveItemHeight,
+  resolveTriggerDistance,
   canLoad,
   transition,
 } from './logic.mjs';
@@ -56,6 +59,9 @@ const FETCH_TIMEOUT_MS = 10000;
 // Une collection peut n'apparaitre dans le store qu'apres le montage du composant.
 // On patiente avant de conclure qu'un identifiant est obsolete.
 const COLLECTION_LOOKUP_GRACE_MS = 3000;
+
+// Hauteur de reserve avant toute mesure reelle. Sert uniquement au premier rendu.
+const DEFAULT_ITEM_HEIGHT = 80;
 
 export default {
   props: {
@@ -83,9 +89,17 @@ export default {
     // l'ancienne source ne doit pas modifier l'etat de la nouvelle.
     const sourceGeneration = ref(0);
 
+    // Les metadonnees de pagination sont lues par appel de fonction, hors du systeme
+    // reactif de Vue. Ce compteur force la reevaluation des computed qui en dependent.
+    const paginationTick = ref(0);
+
     let fetchTimeout = null;
     let observer = null;
+    let resizeObserver = null;
+    let itemResizeObserver = null;
+    // Element qui defile reellement : la racine du composant, un ancetre, ou la page.
     let scrollTarget = null;
+    let scrollListenerTarget = null;
     let observerRetryTimer = null;
     // Instant du premier constat d'absence de la collection dans le store.
     let missingSince = null;
@@ -150,16 +164,33 @@ export default {
       }))
     );
 
-    const itemStyle = computed(() => {
-      const height = Number(props.content.estimatedItemHeight);
-      const safeHeight = Number.isFinite(height) && height > 0 ? height : 80;
-      return { '--ic-item-height': `${safeHeight}px` };
+    // Hauteur reelle d'un element, mesuree apres le premier rendu. Evite de demander
+    // a l'utilisateur une estimation qu'il ne peut que deviner.
+    const measuredItemHeight = ref(null);
+
+    const itemHeight = computed(() =>
+      resolveItemHeight({ measured: measuredItemHeight.value, fallback: DEFAULT_ITEM_HEIGHT })
+    );
+
+    const itemStyle = computed(() => ({ '--ic-item-height': `${itemHeight.value}px` }));
+
+    const preloadScreens = computed(() => {
+      const raw = Number(props.content.preloadScreens);
+      return Number.isFinite(raw) && raw > 0 ? raw : 1;
     });
 
-    /** Le lien manuel n'a de sens que s'il reste quelque chose a charger. */
+    /**
+     * Le declencheur manuel reste visible tant que le total n'est pas couvert.
+     *
+     * Il ne depend pas de l'etat interne : sinon un refetch amont, qui ramene l'etat a
+     * `initializing`, le ferait disparaitre alors qu'il reste des pages a charger.
+     */
     const showManualTrigger = computed(() => {
       if (!isManual.value) return false;
-      return state.value === STATES.IDLE || state.value === STATES.LOADING;
+      if (state.value === STATES.FAILED) return false;
+      // `paginationTick` force la reevaluation : les metadonnees vivent hors de Vue.
+      paginationTick.value;
+      return hasMorePages(currentPagination());
     });
 
     /* -------------------------------------------------------------- *
@@ -237,17 +268,70 @@ export default {
       lookupTimer = null;
     };
 
-    const safeRootMargin = () => {
-      const margin = Number(props.content.rootMargin);
-      return Number.isFinite(margin) && margin >= 0 ? margin : 300;
+    /**
+     * Trouve l'element qui defile reellement.
+     *
+     * WeWeb applique la hauteur definie dans le studio a un wrapper parent, pas
+     * toujours a la racine du composant. Si l'on observe la mauvaise racine,
+     * l'IntersectionObserver ne se declenche jamais et le defilement reste sans effet.
+     * On remonte donc jusqu'au premier ancetre qui defile vraiment.
+     */
+    const findScrollContainer = () => {
+      const start = root.value;
+      if (!start) return null;
+
+      const isScrollable = element => {
+        if (!element || element === document.body || element === document.documentElement) return false;
+        const style = window.getComputedStyle(element);
+        const overflowY = style.overflowY;
+        if (overflowY !== 'auto' && overflowY !== 'scroll' && overflowY !== 'overlay') return false;
+        return element.scrollHeight > element.clientHeight + 1;
+      };
+
+      if (isScrollable(start)) return start;
+
+      let node = start.parentElement;
+      let depth = 0;
+      while (node && depth < 10) {
+        if (isScrollable(node)) return node;
+        node = node.parentElement;
+        depth += 1;
+      }
+
+      // Aucun ancetre ne defile : la page entiere fait office de conteneur.
+      return null;
     };
+
+    /** Hauteur visible du conteneur de defilement. */
+    const viewportHeight = () => {
+      const container = scrollTarget || findScrollContainer();
+      if (container) return container.clientHeight;
+      if (root.value) {
+        const height = root.value.clientHeight;
+        if (height > 0) return height;
+      }
+      return typeof window !== 'undefined' ? window.innerHeight : 0;
+    };
+
+    /** Distance de declenchement, derivee de la hauteur visible. */
+    const triggerDistance = () =>
+      resolveTriggerDistance({
+        viewportHeight: viewportHeight(),
+        itemHeight: itemHeight.value,
+        screens: preloadScreens.value,
+      });
 
     /** Vrai quand la sentinelle est visible, ou proche de l'etre. */
     const isSentinelNear = () => {
-      if (!sentinel.value || !root.value) return false;
+      if (!sentinel.value) return false;
       const sentinelRect = sentinel.value.getBoundingClientRect();
-      const rootRect = root.value.getBoundingClientRect();
-      return sentinelRect.top <= rootRect.bottom + safeRootMargin();
+      const container = scrollTarget || findScrollContainer();
+      const bottom = container
+        ? container.getBoundingClientRect().bottom
+        : typeof window !== 'undefined'
+          ? window.innerHeight
+          : 0;
+      return sentinelRect.top <= bottom + triggerDistance();
     };
 
     const loadMore = () => {
@@ -321,7 +405,17 @@ export default {
       });
     };
 
+    /**
+     * Chargement declenche par l'utilisateur.
+     *
+     * Un clic explicite doit toujours aboutir : si le composant est encore en
+     * `initializing` alors que la collection est prete, on debloque avant de charger.
+     * Sans cela le declencheur serait visible mais sans effet.
+     */
     const onManualLoad = () => {
+      if (state.value === STATES.INITIALIZING && collectionStatus.value.status === 'ready') {
+        state.value = STATES.IDLE;
+      }
       if (!canLoad(state.value)) return;
       loadMore();
     };
@@ -333,6 +427,38 @@ export default {
         if (!canLoad(state.value)) return;
         if (isSentinelNear()) loadMore();
       });
+    };
+
+    /**
+     * Mesure la hauteur reelle d'un element rendu.
+     *
+     * Remplace l'estimation saisie a la main : l'utilisateur ne peut que deviner, alors
+     * que le navigateur connait la valeur exacte des qu'un element existe.
+     */
+    const measureItemHeight = () => {
+      if (!root.value) return;
+      const first = root.value.querySelector('.ic__item');
+      if (!first) return;
+      const height = first.getBoundingClientRect().height;
+      if (!Number.isFinite(height) || height <= 0) return;
+      // On ne reagit qu'aux variations significatives, pour eviter de recalculer la
+      // reserve a chaque pixel.
+      if (measuredItemHeight.value === null || Math.abs(measuredItemHeight.value - height) > 2) {
+        measuredItemHeight.value = height;
+      }
+    };
+
+    /** Observe le premier element pour suivre les variations de hauteur. */
+    const observeItemHeight = () => {
+      if (itemResizeObserver) {
+        itemResizeObserver.disconnect();
+        itemResizeObserver = null;
+      }
+      if (typeof ResizeObserver === 'undefined' || !root.value) return;
+      const first = root.value.querySelector('.ic__item');
+      if (!first) return;
+      itemResizeObserver = new ResizeObserver(() => measureItemHeight());
+      itemResizeObserver.observe(first);
     };
 
     /* -------------------------------------------------------------- *
@@ -494,6 +620,23 @@ export default {
       { immediate: true, deep: false }
     );
 
+    // Les metadonnees de pagination ont pu changer : reevaluer le declencheur manuel,
+    // mesurer la hauteur reelle et rebrancher la detection si le conteneur a change.
+    watch(
+      entries,
+      () => {
+        paginationTick.value += 1;
+        nextTick(() => {
+          measureItemHeight();
+          observeItemHeight();
+          // Le conteneur de defilement n'existe parfois qu'une fois la liste assez
+          // longue pour deborder : il faut alors rebrancher la detection.
+          if (!isManual.value && !scrollTarget && findScrollContainer()) ensureObserver();
+        });
+      },
+      { flush: 'post' }
+    );
+
     // Changer de collection est un changement complet de source.
     watch(collectionId, () => {
       sourceGeneration.value += 1;
@@ -531,10 +674,15 @@ export default {
         observer.disconnect();
         observer = null;
       }
-      if (scrollTarget) {
-        scrollTarget.removeEventListener('scroll', onScroll);
-        scrollTarget = null;
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+        resizeObserver = null;
       }
+      if (scrollListenerTarget) {
+        scrollListenerTarget.removeEventListener('scroll', onScroll);
+        scrollListenerTarget = null;
+      }
+      scrollTarget = null;
     };
 
     /**
@@ -549,22 +697,41 @@ export default {
       if (!sentinel.value || !root.value) return false;
       if (isManual.value) return true;
 
+      const container = findScrollContainer();
+      scrollTarget = container;
+
       if (typeof IntersectionObserver !== 'undefined') {
         observer = new IntersectionObserver(
           intersections => {
             if (intersections.some(intersection => intersection.isIntersecting)) loadMore();
           },
           {
-            root: root.value,
-            rootMargin: `0px 0px ${safeRootMargin()}px 0px`,
+            // `root: null` observe par rapport a la fenetre : c'est le comportement
+            // correct quand aucun ancetre ne defile.
+            root: container,
+            rootMargin: `0px 0px ${triggerDistance()}px 0px`,
             threshold: 0,
           }
         );
         observer.observe(sentinel.value);
       }
 
-      scrollTarget = root.value;
-      scrollTarget.addEventListener('scroll', onScroll, { passive: true });
+      // L'ecouteur de defilement doit etre pose sur l'element qui defile vraiment,
+      // ou sur la fenetre a defaut.
+      const scrollSource = container || (typeof window !== 'undefined' ? window : null);
+      if (scrollSource) {
+        scrollSource.addEventListener('scroll', onScroll, { passive: true });
+        scrollListenerTarget = scrollSource;
+      }
+
+      // Une variation de hauteur du conteneur change la distance de declenchement.
+      if (typeof ResizeObserver !== 'undefined' && container) {
+        resizeObserver = new ResizeObserver(() => {
+          if (!canLoad(state.value)) return;
+          if (isSentinelNear()) loadMore();
+        });
+        resizeObserver.observe(container);
+      }
 
       return true;
     };
@@ -589,12 +756,16 @@ export default {
       }, 50 * (attempt + 1));
     };
 
-    watch([() => props.content.rootMargin, isManual], () => nextTick(() => ensureObserver()));
+    watch([preloadScreens, isManual], () => nextTick(() => ensureObserver()));
 
     onMounted(() => nextTick(() => ensureObserver()));
 
     onBeforeUnmount(() => {
       teardownWatchers();
+      if (itemResizeObserver) {
+        itemResizeObserver.disconnect();
+        itemResizeObserver = null;
+      }
       clearObserverRetry();
       clearFetchTimeout();
       clearLookupTimer();

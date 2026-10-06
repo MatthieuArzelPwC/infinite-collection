@@ -99,14 +99,17 @@ Le type fait partie de la clé : `5` (nombre) et `"5"` (texte) ne collisionnent 
 | `Cle unique` | Champ scalaire identifiant un élément | `id` |
 | `Chargement manuel` | Lien cliquable au lieu du défilement automatique | `false` |
 | `Libelle du chargement manuel` | Texte du lien, si mode manuel | `Charger la suite` |
-| `Hauteur estimee d un element` | Alimente `contain-intrinsic-size` | `80` |
-| `Distance de declenchement` | Anticipation du chargement, en pixels | `300` |
+| `Prechargement (ecrans)` | Anticipation, en hauteurs de zone visible | `1` |
 
 ### Chargement manuel
 
 Avec `Chargement manuel` activé, un lien apparaît en fin de liste et la page suivante
 n'est chargée qu'au clic. Le défilement ne déclenche plus rien, et
-`Distance de declenchement` est masquée.
+`Prechargement (ecrans)` est masqué.
+
+Le lien reste visible **tant que le total n'est pas couvert**, indépendamment de l'état
+interne : un refetch de la collection ne le fait pas disparaître alors qu'il reste des
+pages à charger.
 
 Utile pour diagnostiquer la pagination : chaque clic correspond à exactement une
 requête, ce qui rend l'observation dans l'onglet Network sans ambiguïté.
@@ -246,8 +249,28 @@ Cette approche tient confortablement l'ordre de grandeur visé (quelques millier
 d'éléments). Au-delà, une virtualisation réelle deviendrait pertinente, au prix des
 effets de bord ci-dessus.
 
-`Hauteur estimee d un element` n'a pas besoin d'être exacte : elle sert à dimensionner
-la barre de défilement avant que les éléments soient rendus.
+La hauteur de réserve est **mesurée** sur le premier élément rendu, puis suivie par un
+`ResizeObserver`. Aucune estimation n'est demandée : le navigateur connaît la valeur
+exacte dès qu'un élément existe.
+
+De même, la distance de déclenchement est **dérivée** de la hauteur visible du
+conteneur. `Prechargement (ecrans)` s'exprime en nombre de hauteurs d'écran : `1`
+signifie « charger quand il reste environ un écran de contenu ». Un plancher garantit le
+déclenchement sur un conteneur très court (une hauteur de 100px reste fonctionnelle).
+
+## Conteneur de défilement
+
+Le composant ne fixe aucune hauteur : elle vient des propriétés de style du studio. Mais
+WeWeb applique parfois cette hauteur à un **wrapper parent** plutôt qu'à la racine du
+composant. Dans ce cas, c'est ce parent qui défile.
+
+Le composant remonte donc la hiérarchie pour trouver le premier ancêtre réellement
+défilant (`overflow-y` défilable **et** contenu plus haut que la zone visible), et y
+attache l'`IntersectionObserver` ainsi que l'écouteur de défilement. Si aucun ancêtre ne
+défile, c'est la fenêtre qui est observée.
+
+Si le défilement ne déclenche rien, activer `Chargement manuel` : le lien fonctionne
+indépendamment de la détection du conteneur et permet d'isoler le problème.
 
 ## Limites connues
 
