@@ -12,7 +12,6 @@ import { test } from 'node:test';
 import {
   STATES,
   ERROR_CODES,
-  resolveKey,
   mergeItems,
   resetItems,
   validatePagination,
@@ -58,13 +57,13 @@ function createSource(available, limit, announcedTotal) {
 }
 
 /** Rejoue un scroll infini complet. */
-function drain(source, itemKey = 'id', maxIterations = 1000) {
+function drain(source, maxIterations = 1000) {
   let items = [];
   let keys = new Set();
   let fetches = 0;
   let outcome = null;
 
-  const first = resetItems({ incoming: source.page(), offset: source.offset, itemKey });
+  const first = resetItems({ incoming: source.page(), offset: source.offset});
   items = first.items;
   keys = first.keys;
   fetches += 1;
@@ -75,7 +74,7 @@ function drain(source, itemKey = 'id', maxIterations = 1000) {
 
     source.setOffset(plan.offset);
     const incoming = source.page();
-    const merged = mergeItems({ current: items, keys, incoming, offset: plan.offset, itemKey });
+    const merged = mergeItems({ current: items, keys, incoming, offset: plan.offset});
     items = merged.items;
     keys = merged.keys;
     fetches += 1;
@@ -95,66 +94,13 @@ function drain(source, itemKey = 'id', maxIterations = 1000) {
 }
 
 /* ================================================================== *
- * resolveKey
- * ================================================================== */
-
-test('resolveKey privilegie le champ metier', () => {
-  assert.equal(resolveKey({ id: 42 }, 7, 'id'), 'k:number:42');
-  assert.equal(resolveKey({ id: 'abc' }, 7, 'id'), 'k:string:abc');
-});
-
-test('resolveKey distingue un identifiant numerique d un identifiant chaine', () => {
-  // Sans le type dans la cle, 5 et "5" collisionneraient et un element disparaitrait.
-  const numeric = resolveKey({ id: 5 }, 0, 'id');
-  const textual = resolveKey({ id: '5' }, 1, 'id');
-  assert.notEqual(numeric, textual);
-  assert.equal(numeric, 'k:number:5');
-  assert.equal(textual, 'k:string:5');
-});
-
-test('resolveKey accepte les booleens et les bigint', () => {
-  assert.equal(resolveKey({ id: true }, 0, 'id'), 'k:boolean:true');
-  assert.equal(resolveKey({ id: 10n }, 0, 'id'), 'k:bigint:10');
-});
-
-test('resolveKey refuse une cle objet ou tableau', () => {
-  // Converties en "[object Object]", toutes les lignes partageraient une seule cle.
-  assert.equal(resolveKey({ id: { a: 1 } }, 7, 'id'), 'i:7');
-  assert.equal(resolveKey({ id: [1, 2] }, 8, 'id'), 'i:8');
-});
-
-test('resolveKey refuse NaN et Infinity comme cle metier', () => {
-  assert.equal(resolveKey({ id: NaN }, 7, 'id'), 'i:7');
-  assert.equal(resolveKey({ id: Infinity }, 8, 'id'), 'i:8');
-});
-
-test('resolveKey retombe sur l index absolu quand la cle est inexploitable', () => {
-  assert.equal(resolveKey({ id: null }, 7, 'id'), 'i:7');
-  assert.equal(resolveKey({ id: undefined }, 7, 'id'), 'i:7');
-  assert.equal(resolveKey({ id: '' }, 7, 'id'), 'i:7');
-  assert.equal(resolveKey({ other: 1 }, 7, 'id'), 'i:7');
-  assert.equal(resolveKey({ id: 1 }, 7, null), 'i:7');
-  assert.equal(resolveKey('scalaire', 7, 'id'), 'i:7');
-  assert.equal(resolveKey(null, 7, 'id'), 'i:7');
-});
-
-test('deux objets distincts ne produisent pas la meme cle', () => {
-  const result = resetItems({
-    incoming: [{ id: { a: 1 } }, { id: { b: 2 } }],
-    offset: 0,
-    itemKey: 'id',
-  });
-  assert.equal(result.added, 2, 'aucun element ne doit etre absorbe par collision');
-});
-
-/* ================================================================== *
  * mergeItems
  * ================================================================== */
 
 test('mergeItems accumule sans muter les entrees', () => {
-  const current = [{ key: 'k:number:1', data: { id: 1 } }];
+  const current = [{ key: 0, data: { id: 1 } }];
   const frozen = Object.freeze(current.slice());
-  const keys = new Set(['k:number:1']);
+  const keys = new Set([0]);
 
   const result = mergeItems({
     current: frozen,
@@ -170,18 +116,31 @@ test('mergeItems accumule sans muter les entrees', () => {
   assert.equal(keys.size, 1, 'le Set source ne doit pas etre mute');
 });
 
-test('mergeItems ignore les doublons', () => {
-  const first = resetItems({ incoming: [{ id: 1 }, { id: 2 }], offset: 0, itemKey: 'id' });
+test('mergeItems ignore une page deja accumulee au meme offset', () => {
+  // La position absolue sert de garde-fou : rejouer la meme page ne duplique rien.
+  const first = resetItems({ incoming: [{ id: 1 }, { id: 2 }], offset: 0 });
+  const replay = mergeItems({
+    current: first.items,
+    keys: first.keys,
+    incoming: [{ id: 1 }, { id: 2 }],
+    offset: 0,
+  });
+
+  assert.equal(replay.added, 0, 'aucune ligne ajoutee');
+  assert.equal(replay.items.length, 2);
+});
+
+test('mergeItems accumule des pages d offsets differents', () => {
+  const first = resetItems({ incoming: [{ id: 1 }, { id: 2 }], offset: 0 });
   const second = mergeItems({
     current: first.items,
     keys: first.keys,
-    incoming: [{ id: 2 }, { id: 3 }],
+    incoming: [{ id: 3 }, { id: 4 }],
     offset: 2,
-    itemKey: 'id',
   });
 
-  assert.equal(second.added, 1);
-  assert.deepEqual(second.items.map(entry => entry.data.id), [1, 2, 3]);
+  assert.equal(second.added, 2);
+  assert.deepEqual(second.items.map(entry => entry.data.id), [1, 2, 3, 4]);
 });
 
 /* ================================================================== *
@@ -281,12 +240,14 @@ test('classifyIncoming accumule quand l offset correspond a la page demandee', (
   });
 });
 
-test('classifyIncoming ignore une page dont l offset ne correspond pas encore', () => {
-  // Melanger deux paginations corromprait l'accumulateur.
-  assert.deepEqual(classifyIncoming({ pendingOffset: 100, currentOffset: 50 }), {
-    mode: 'ignore',
-    offset: 50,
-  });
+test('classifyIncoming accepte la page meme si l offset amont est en retard', () => {
+  // WeWeb peut publier les donnees avant que getPaginationOptions() ne reflete le
+  // nouvel offset. Refuser la page bloquait definitivement le composant : le verrou
+  // n etait jamais relache et le declencheur manuel devenait inerte.
+  const verdict = classifyIncoming({ pendingOffset: 100, currentOffset: 50 });
+  assert.equal(verdict.mode, 'append');
+  assert.equal(verdict.offset, 100, 'l offset demande fait foi');
+  assert.equal(verdict.offsetLagging, true);
 });
 
 test('classifyIncoming remet a zero sur un changement amont non sollicite', () => {
@@ -606,33 +567,28 @@ test('un total surestime en bord de page est signale, pas masque', () => {
   assert.equal(outcome.code, ERROR_CODES.EMPTY_PAGE);
 });
 
-test('pages qui se chevauchent : deduplication effective', () => {
-  const first = resetItems({ incoming: [{ id: 1 }, { id: 2 }, { id: 3 }], offset: 0, itemKey: 'id' });
+test('deux pages consecutives s accumulent sans se recouvrir', () => {
+  const first = resetItems({ incoming: [{ id: 1 }, { id: 2 }, { id: 3 }], offset: 0 });
   const second = mergeItems({
     current: first.items,
     keys: first.keys,
-    incoming: [{ id: 3 }, { id: 4 }, { id: 5 }],
+    incoming: [{ id: 4 }, { id: 5 }, { id: 6 }],
     offset: 3,
-    itemKey: 'id',
   });
 
-  assert.equal(second.added, 2);
-  assert.deepEqual(second.items.map(e => e.data.id), [1, 2, 3, 4, 5]);
-});
-
-test('sans cle metier, des pages distinctes restent accumulables', () => {
-  const { items } = drain(createSource(150, 50), null);
-  assert.equal(items.length, 150, 'le repli par index absolu doit rester unique entre pages');
+  assert.equal(second.added, 3);
+  assert.deepEqual(second.items.map(e => e.data.id), [1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(second.items.map(e => e.key), [0, 1, 2, 3, 4, 5], 'cles = positions absolues');
 });
 
 test('changement de filtre amont : reset de l accumulateur', () => {
-  const first = resetItems({ incoming: [{ id: 1 }, { id: 2 }], offset: 0, itemKey: 'id' });
+  const first = resetItems({ incoming: [{ id: 1 }, { id: 2 }], offset: 0 });
   assert.equal(first.items.length, 2);
 
   const { mode } = classifyIncoming({ pendingOffset: null, currentOffset: 0 });
   assert.equal(mode, 'reset');
 
-  const after = resetItems({ incoming: [{ id: 99 }], offset: 0, itemKey: 'id' });
+  const after = resetItems({ incoming: [{ id: 99 }], offset: 0 });
   assert.equal(after.items.length, 1);
   assert.equal(after.items[0].data.id, 99);
 });

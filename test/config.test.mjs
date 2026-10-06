@@ -83,11 +83,37 @@ test('les anciennes proprietes de source ont disparu', () => {
   assert.doesNotMatch(source, /content\.items/);
 });
 
-test('le mode manuel est un booleen desactive par defaut', () => {
+test('le mode manuel est actif par defaut', () => {
+  // Le chargement au defilement reste a valider dans le studio : le declencheur
+  // explicite est le comportement par defaut en attendant.
   const { manualLoad } = config.properties;
   assert.equal(manualLoad.type, 'OnOff');
-  assert.equal(manualLoad.defaultValue, false);
+  assert.equal(manualLoad.defaultValue, true);
   assert.equal(manualLoad.section, 'settings');
+});
+
+test('aucune propriete de cle unique n est demandee', () => {
+  // Avec une pagination par offset, la position absolue identifie deja chaque ligne.
+  // Une cle metier mal choisie fusionnait des lignes distinctes sans aucun signe.
+  assert.equal(config.properties.itemKey, undefined);
+  assert.doesNotMatch(source, /itemKey/);
+  assert.doesNotMatch(logicSource, /resolveKey|identityFields/);
+});
+
+test('un clic manuel ne peut jamais rester sans effet', () => {
+  // Un declencheur visible mais inerte ne laisse aucune trace a diagnostiquer.
+  const start = source.indexOf('const onManualLoad');
+  const body = source.slice(start, start + 1200);
+  assert.match(body, /STATES\.LOADING/, 'un verrou non confirme doit etre relache');
+  assert.match(body, /STATES\.TIMED_OUT/);
+  assert.match(body, /STATES\.INITIALIZING/);
+  assert.match(body, /wwLog/, 'tout refus doit etre journalise');
+});
+
+test('aucune page recue n est silencieusement ignoree', () => {
+  // La branche `ignore` sortait du watcher sans relacher pendingOffset : l etat
+  // restait `loading` indefiniment et le composant se figeait.
+  assert.doesNotMatch(source, /mode === 'ignore'/);
 });
 
 test('le libelle du chargement manuel est masque hors mode manuel', () => {

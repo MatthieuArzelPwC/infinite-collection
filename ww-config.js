@@ -6,14 +6,11 @@ const WW_FLEXBOX_TYPE = 'b783dc65-d528-4f74-8c14-e27c934c39b1';
 const collectionHelp =
   "Collection a afficher et a paginer. Un seul choix suffit : le composant en lit les donnees, la limite, l'offset et le total.\n\nLa collection DOIT avoir une limite configuree (ex: 50) : c'est elle qui active la pagination serveur.";
 
-const itemKeyHelp =
-  "Nom du champ qui identifie un element de maniere unique (ex: `id`), idealement la cle primaire. La valeur doit etre scalaire (texte, nombre, booleen), stable et unique dans toute la collection. Une cle objet ou absente fait retomber sur l'index absolu, dont la deduplication est moins fiable.";
-
 const preloadScreensHelp =
   "Quantite de contenu a precharger, exprimee en hauteurs de zone visible.\n\n1 = charger la page suivante lorsqu'il reste environ un ecran de contenu sous le point de defilement. Augmenter pour anticiper davantage, au prix de requetes plus precoces.\n\nLa distance en pixels est calculee automatiquement a partir de la hauteur reelle du composant : il n'y a pas de valeur en pixels a saisir.";
 
 const manualLoadHelp =
-  "Affiche un lien cliquable en fin de liste pour charger la page suivante a la demande, au lieu de la charger automatiquement au defilement.\n\nUtile pour diagnostiquer la pagination, ou lorsque le defilement automatique n'est pas souhaite.";
+  "Affiche un lien cliquable en fin de liste pour charger la page suivante a la demande.\n\nActive par defaut : le chargement au defilement est en cours de mise au point. Un clic correspond a exactement une requete, ce qui rend le diagnostic sans ambiguite.";
 
 export default {
   options: {
@@ -71,28 +68,6 @@ export default {
         type: WW_FLEXBOX_TYPE,
       },
     },
-    itemKey: {
-      label: {
-        en: 'Unique key',
-        fr: 'Cle unique',
-      },
-      section: 'settings',
-      type: 'Text',
-      bindable: true,
-      defaultValue: 'id',
-      options: {
-        placeholder: 'id',
-      },
-      /* wwEditor:start */
-      bindingValidation: {
-        type: 'string',
-        tooltip: itemKeyHelp,
-      },
-      propertyHelp: {
-        tooltip: itemKeyHelp,
-      },
-      /* wwEditor:end */
-    },
     manualLoad: {
       label: {
         en: 'Manual load',
@@ -101,7 +76,8 @@ export default {
       section: 'settings',
       type: 'OnOff',
       bindable: true,
-      defaultValue: false,
+      // Actif par defaut : le chargement au defilement reste a valider dans le studio.
+      defaultValue: true,
       /* wwEditor:start */
       bindingValidation: {
         type: 'boolean',

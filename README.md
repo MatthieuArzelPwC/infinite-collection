@@ -18,7 +18,6 @@ pagination incohérente.
 - une **limite** configurée sur la collection (ex. 50) ;
 - un **total** disponible — fourni par WeWeb dès qu'une limite existe ;
 - un **ordre serveur déterministe**, incluant une colonne unique dans le tri ;
-- une **clé métier scalaire, stable et unique** sur toute la collection ;
 - filtres et tris **inchangés** pendant le défilement ;
 - données **non modifiées** pendant le défilement.
 
@@ -82,21 +81,17 @@ Le composant contient une Flexbox. Y glisser la div ou le composant personnalis�
 répéter. Les données de l'élément courant sont accessibles au binding dans tout ce qui
 est placé à l'intérieur.
 
-### 6. Renseigner la clé unique
+### 6. Identification des lignes
 
-`Cle unique` (par défaut `id`) sert à dédupliquer les éléments entre deux pages. La
-valeur doit être **scalaire** : un objet ou un tableau serait converti en
-`[object Object]`, toutes les lignes partageraient la même clé et seraient fusionnées
-en une seule. Dans ce cas le composant retombe sur l'index absolu.
-
-Le type fait partie de la clé : `5` (nombre) et `"5"` (texte) ne collisionnent pas.
+Rien à configurer. Avec une pagination par offset, la position absolue d'une ligne
+(offset + index dans la page) l'identifie déjà : la ligne à l'offset 50 position 3 est la
+53e. C'est aussi ce qui empêche une page livrée deux fois d'être dupliquée.
 
 ## Propriétés
 
 | Propriété | Rôle | Défaut |
 |---|---|---|
 | `Collection` | Collection à afficher et paginer — source unique | `null` |
-| `Cle unique` | Champ scalaire identifiant un élément | `id` |
 | `Chargement manuel` | Lien cliquable au lieu du défilement automatique | `false` |
 | `Libelle du chargement manuel` | Texte du lien, si mode manuel | `Charger la suite` |
 | `Prechargement (ecrans)` | Anticipation, en hauteurs de zone visible | `1` |
@@ -150,6 +145,12 @@ Charge utile : `code`, `message`.
 | `INCOMPLETE_PAGE` | la dernière page ne couvre pas le total annoncé |
 | `DUPLICATE_PAGE` | page reçue sans aucun élément nouveau |
 
+### État du chargement au défilement
+
+`Chargement manuel` est **actif par défaut** : le déclenchement au défilement est en
+cours de mise au point dans le studio. Le lien explicite est fiable et permet de valider
+la pagination indépendamment de la détection du conteneur de défilement.
+
 Dans tous les cas, **les éléments déjà affichés sont conservés** : une panne de
 pagination ne fait pas disparaître ce que l'utilisateur voit.
 
@@ -163,8 +164,6 @@ Le total promettait davantage. Signale une incohérence côté source, pas une f
 
 Dans le contexte prévu, cela ne peut pas se produire. Les causes probables :
 
-- clé unique mal choisie ou non unique ;
-- collision de clés ;
 - réponse correspondant au mauvais offset ;
 - données modifiées pendant le défilement.
 
@@ -315,8 +314,11 @@ sans cet état, un tableau vide renvoyé par une collection pas encore fetchée 
 pour une page 0 vide, et le composant demanderait aussitôt l'offset suivant — la
 première page serait sautée.
 
-Un changement de `Cle unique` ou de `Collection` constitue un reset légitime et
-débloque un état terminal. Chaque changement de collection incrémente une génération
+Un changement de `Collection` constitue un reset légitime et débloque un état terminal.
+
+Un clic sur le déclencheur manuel force la sortie de `initializing`, `loading` et
+`timedOut` : une action explicite de l'utilisateur doit toujours produire soit une
+requête, soit une erreur, jamais un silence. Chaque changement de collection incrémente une génération
 interne : un timer ou un callback de l'ancienne source ne peut plus modifier l'état de
 la nouvelle.
 
@@ -325,7 +327,13 @@ la nouvelle.
 ### Scénario nominal
 
 Collection Supabase de 500 lignes ou plus, limite 50, sélectionnée dans `Collection`,
-clé primaire en `Cle unique`, hauteur 30vh, tri incluant une colonne unique.
+hauteur 30vh, tri incluant une colonne unique.
+
+Le composant journalise chaque décision de pagination dans la console :
+
+```
+[infinite-collection] limit=12 offset=0 total=95 affiches=12 -> fetch offset=12
+```
 
 Commencer avec `Chargement manuel` activé : un clic doit produire exactement une
 requête. Une fois ce comportement confirmé, désactiver le mode manuel pour vérifier le

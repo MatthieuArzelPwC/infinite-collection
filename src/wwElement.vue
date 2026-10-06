@@ -114,11 +114,6 @@ export default {
       return typeof raw === 'string' && raw.length ? raw : null;
     });
 
-    const itemKey = computed(() => {
-      const raw = props.content.itemKey;
-      return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
-    });
-
     const isManual = computed(() => !!props.content.manualLoad);
 
     const manualLabel = computed(() => {
@@ -187,7 +182,7 @@ export default {
      */
     const showManualTrigger = computed(() => {
       if (!isManual.value) return false;
-      if (state.value === STATES.FAILED) return false;
+      if (state.value === STATES.FAILED || state.value === STATES.ENDED) return false;
       // `paginationTick` force la reevaluation : les metadonnees vivent hors de Vue.
       paginationTick.value;
       return hasMorePages(currentPagination());
@@ -351,6 +346,12 @@ export default {
 
       const plan = planNextFetch(pagination);
 
+      // Trace de diagnostic : rend visible dans la console ce que WeWeb annonce et ce
+      // que le composant decide, sans avoir a instrumenter le code.
+      wwLib.wwLog?.log?.(
+        `[infinite-collection] limit=${pagination.limit} offset=${pagination.offset} total=${pagination.total} affiches=${accumulator.value.length} -> ${plan.action}${plan.offset !== undefined ? ` offset=${plan.offset}` : ''}`
+      );
+
       if (plan.action === 'error') {
         fail(plan.code);
         return;
@@ -408,15 +409,35 @@ export default {
     /**
      * Chargement declenche par l'utilisateur.
      *
-     * Un clic explicite doit toujours aboutir : si le composant est encore en
-     * `initializing` alors que la collection est prete, on debloque avant de charger.
-     * Sans cela le declencheur serait visible mais sans effet.
+     * Un clic explicite doit TOUJOURS produire un effet : soit une requete, soit une
+     * erreur exploitable. Un declencheur visible mais inerte est la pire des pannes,
+     * puisqu'elle ne laisse aucune trace a diagnostiquer.
+     *
+     * Les etats transitoires sont donc forces : `initializing` signifie que la page
+     * initiale n'a pas ete observee, et `loading`/`timedOut` qu'une requete precedente
+     * n'a jamais ete confirmee. Dans les deux cas, l'utilisateur demande explicitement
+     * a avancer : on relache le verrou plutot que de l'ignorer.
      */
     const onManualLoad = () => {
-      if (state.value === STATES.INITIALIZING && collectionStatus.value.status === 'ready') {
+      if (state.value === STATES.LOADING || state.value === STATES.TIMED_OUT) {
+        wwLib.wwLog?.error?.(
+          `[infinite-collection] requete precedente non confirmee (offset=${pendingOffset.value}) : deverrouillage sur action utilisateur.`
+        );
+        pendingOffset.value = null;
+        clearFetchTimeout();
         state.value = STATES.IDLE;
       }
-      if (!canLoad(state.value)) return;
+
+      if (state.value === STATES.INITIALIZING) {
+        state.value = STATES.IDLE;
+      }
+
+      if (!canLoad(state.value)) {
+        // Seuls `ended` et `failed` arrivent ici, et le bouton est alors masque.
+        wwLib.wwLog?.error?.(`[infinite-collection] chargement impossible dans l etat "${state.value}".`);
+        return;
+      }
+
       loadMore();
     };
 
@@ -466,7 +487,7 @@ export default {
      * -------------------------------------------------------------- */
 
     const resetAll = (incoming, offset) => {
-      const result = resetItems({ incoming, offset, itemKey: itemKey.value });
+      const result = resetItems({ incoming, offset });
       accumulator.value = result.items;
       keys.value = result.keys;
       pendingOffset.value = null;
@@ -546,12 +567,8 @@ export default {
           currentOffset,
         });
 
-        // Une page attendue dont l'offset ne correspond pas encore : l'integrer
-        // melangerait deux paginations.
-        if (mode === 'ignore') return;
-
         if (mode === 'reset') {
-          const reset = resetItems({ incoming, offset, itemKey: itemKey.value });
+          const reset = resetItems({ incoming, offset });
           accumulator.value = reset.items;
           keys.value = reset.keys;
           pendingOffset.value = null;
@@ -587,7 +604,6 @@ export default {
           keys: keys.value,
           incoming,
           offset,
-          itemKey: itemKey.value,
         });
         accumulator.value = result.items;
         keys.value = result.keys;
@@ -647,11 +663,6 @@ export default {
       keys.value = new Set();
       pendingOffset.value = null;
       state.value = STATES.INITIALIZING;
-    });
-
-    // Un changement de cle invalide toutes les cles deja calculees.
-    watch(itemKey, () => {
-      resetAll(incomingItems.value, 0);
     });
 
     /* -------------------------------------------------------------- *

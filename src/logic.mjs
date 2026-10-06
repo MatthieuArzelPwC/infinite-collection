@@ -63,7 +63,7 @@ export const ERROR_MESSAGES = {
   [ERROR_CODES.INCOMPLETE_PAGE]:
     'La page recue est plus courte qu annonce : toutes les lignes du total ne sont pas couvertes.',
   [ERROR_CODES.DUPLICATE_PAGE]:
-    'La page recue ne contient aucun nouvel element. Verifiez la cle unique et la coherence de la pagination.',
+    'La page recue ne contient aucun nouvel element, signe d une pagination incoherente.',
 };
 
 export function describeError(code, details) {
@@ -72,58 +72,33 @@ export function describeError(code, details) {
 }
 
 /* ------------------------------------------------------------------ *
- * Cles de deduplication
- * ------------------------------------------------------------------ */
-
-/**
- * Une cle metier doit etre scalaire. Un objet ou un tableau serait converti en
- * `[object Object]` : toutes les lignes partageraient alors la meme cle et seraient
- * silencieusement fusionnees en une seule.
- */
-function isUsableKey(value) {
-  if (value === undefined || value === null || value === '') return false;
-  const type = typeof value;
-  return type === 'string' || type === 'number' || type === 'boolean' || type === 'bigint';
-}
-
-/**
- * Calcule la cle d'un element.
- *
- * Le type est inclus dans la cle : sans cela `5` et `"5"` produiraient la meme cle et
- * l'un des deux elements disparaitrait de la liste.
- */
-export function resolveKey(item, absoluteIndex, itemKey) {
-  if (itemKey && item !== null && typeof item === 'object') {
-    const raw = item[itemKey];
-    if (isUsableKey(raw)) {
-      if (typeof raw === 'number' && !Number.isFinite(raw)) return `i:${absoluteIndex}`;
-      return `k:${typeof raw}:${String(raw)}`;
-    }
-  }
-  return `i:${absoluteIndex}`;
-}
-
-/* ------------------------------------------------------------------ *
  * Accumulation
  * ------------------------------------------------------------------ */
 
 /**
- * Fusionne une page recue dans l'accumulateur, en ignorant les doublons.
+ * Fusionne une page recue dans l'accumulateur.
+ *
+ * Avec une pagination par offset, la position absolue d'une ligne (offset + index dans
+ * la page) l'identifie deja de maniere unique : la ligne a l'offset 50 position 3 est
+ * la 53e, quelle que soit la forme des donnees. Aucune cle metier n'est donc requise,
+ * et aucune n'est demandee a l'utilisateur.
+ *
+ * Cette position sert aussi de garde-fou : si la meme page est livree deux fois, ses
+ * lignes portent les memes positions et ne sont pas dupliquees.
  *
  * Retourne de nouvelles references (jamais de mutation en place) pour que la
  * reactivite Vue se declenche.
  */
-export function mergeItems({ current = [], keys, incoming = [], offset = 0, itemKey }) {
+export function mergeItems({ current = [], keys, incoming = [], offset = 0 }) {
   const nextKeys = new Set(keys || []);
   const nextItems = current.slice();
   let added = 0;
 
   for (let i = 0; i < incoming.length; i += 1) {
-    const data = incoming[i];
-    const key = resolveKey(data, offset + i, itemKey);
-    if (nextKeys.has(key)) continue;
-    nextKeys.add(key);
-    nextItems.push({ key, data });
+    const position = offset + i;
+    if (nextKeys.has(position)) continue;
+    nextKeys.add(position);
+    nextItems.push({ key: position, data: incoming[i] });
     added += 1;
   }
 
@@ -131,8 +106,8 @@ export function mergeItems({ current = [], keys, incoming = [], offset = 0, item
 }
 
 /** Construit l'accumulateur a partir d'une page unique (premier chargement ou reset). */
-export function resetItems({ incoming = [], offset = 0, itemKey }) {
-  return mergeItems({ current: [], keys: new Set(), incoming, offset, itemKey });
+export function resetItems({ incoming = [], offset = 0 }) {
+  return mergeItems({ current: [], keys: new Set(), incoming, offset });
 }
 
 /* ------------------------------------------------------------------ *
@@ -297,13 +272,21 @@ export function assessCollection(collection) {
  * requete en cours : une reponse tardive, ou un refetch declenche par WeWeb,
  * ne doit jamais etre confondue avec un changement de filtre.
  */
-export function classifyIncoming({ pendingOffset, currentOffset = 0 }) {
+export function classifyIncoming({ pendingOffset, currentOffset = 0, previousCount = 0, incomingCount = 0 }) {
   const hasPending = pendingOffset !== null && pendingOffset !== undefined;
   const offset = isNonNegativeInteger(currentOffset) ? Number(currentOffset) : 0;
 
   if (hasPending) {
-    if (offset === Number(pendingOffset)) return { mode: 'append', offset };
-    return { mode: 'ignore', offset };
+    const expected = Number(pendingOffset);
+
+    // Cas nominal : l'offset amont reflete la page demandee.
+    if (offset === expected) return { mode: 'append', offset: expected };
+
+    // WeWeb peut publier les donnees AVANT que getPaginationOptions() ne reflete le
+    // nouvel offset. Refuser la page dans ce cas bloquait definitivement le composant :
+    // le verrou n'etait jamais relache. On fait donc confiance a l'offset demande, qui
+    // est celui que l'on vient d'appliquer.
+    return { mode: 'append', offset: expected, offsetLagging: true };
   }
 
   if (offset === 0) return { mode: 'reset', offset: 0 };
