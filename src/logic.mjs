@@ -11,6 +11,8 @@
  * ------------------------------------------------------------------ */
 
 export const STATES = {
+  /** Aucune page initiale observee : on ne doit pas demander d'offset suivant. */
+  INITIALIZING: 'initializing',
   IDLE: 'idle',
   LOADING: 'loading',
   TIMED_OUT: 'timedOut',
@@ -20,7 +22,9 @@ export const STATES = {
 
 /** Codes d'erreur, pour que chaque panne soit identifiable dans un workflow. */
 export const ERROR_CODES = {
-  NO_SOURCE: 'NO_SOURCE',
+  NO_COLLECTION_SELECTED: 'NO_COLLECTION_SELECTED',
+  COLLECTION_NOT_FOUND: 'COLLECTION_NOT_FOUND',
+  COLLECTION_DATA_UNAVAILABLE: 'COLLECTION_DATA_UNAVAILABLE',
   API_UNAVAILABLE: 'API_UNAVAILABLE',
   PAGINATION_READ_FAILED: 'PAGINATION_READ_FAILED',
   NO_METADATA: 'NO_METADATA',
@@ -30,18 +34,23 @@ export const ERROR_CODES = {
   SET_OFFSET_FAILED: 'SET_OFFSET_FAILED',
   FETCH_TIMEOUT: 'FETCH_TIMEOUT',
   EMPTY_PAGE: 'EMPTY_PAGE',
+  INCOMPLETE_PAGE: 'INCOMPLETE_PAGE',
   DUPLICATE_PAGE: 'DUPLICATE_PAGE',
 };
 
 export const ERROR_MESSAGES = {
-  [ERROR_CODES.NO_SOURCE]:
-    'Impossible de paginer la collection. Renseignez une Source paginee valide et verifiez que la collection possede une limite.',
+  [ERROR_CODES.NO_COLLECTION_SELECTED]:
+    'Selectionnez une collection paginee dans la propriete Collection du composant.',
+  [ERROR_CODES.COLLECTION_NOT_FOUND]:
+    'La collection selectionnee est introuvable dans le runtime WeWeb.',
+  [ERROR_CODES.COLLECTION_DATA_UNAVAILABLE]:
+    'Les donnees de la collection selectionnee ne peuvent pas etre lues comme une liste.',
   [ERROR_CODES.API_UNAVAILABLE]:
-    'La pagination native WeWeb est indisponible dans cette version. Pilotez la pagination par un workflow.',
+    'La pagination native WeWeb est indisponible dans cette version.',
   [ERROR_CODES.PAGINATION_READ_FAILED]:
     'La lecture des informations de pagination de la collection a echoue.',
   [ERROR_CODES.NO_METADATA]:
-    'La collection ne fournit pas d informations de pagination. Verifiez que la Source paginee designe bien une collection.',
+    'La collection ne fournit pas d informations de pagination. Verifiez qu une limite est configuree.',
   [ERROR_CODES.INVALID_LIMIT]:
     'La collection doit avoir une limite entiere superieure a zero, configuree dans le studio WeWeb.',
   [ERROR_CODES.INVALID_OFFSET]: 'L offset de la collection est invalide.',
@@ -51,6 +60,8 @@ export const ERROR_MESSAGES = {
   [ERROR_CODES.FETCH_TIMEOUT]:
     'Le chargement de la page a depasse le delai autorise. Le composant reste en attente afin d eviter une pagination incoherente.',
   [ERROR_CODES.EMPTY_PAGE]: 'La collection a retourne une page vide avant la fin annoncee.',
+  [ERROR_CODES.INCOMPLETE_PAGE]:
+    'La page recue est plus courte qu annonce : toutes les lignes du total ne sont pas couvertes.',
   [ERROR_CODES.DUPLICATE_PAGE]:
     'La page recue ne contient aucun nouvel element. Verifiez la cle unique et la coherence de la pagination.',
 };
@@ -80,10 +91,6 @@ function isUsableKey(value) {
  *
  * Le type est inclus dans la cle : sans cela `5` et `"5"` produiraient la meme cle et
  * l'un des deux elements disparaitrait de la liste.
- *
- * Si la cle metier est absente ou non scalaire, on retombe sur l'index absolu
- * (offset + index dans la page), unique entre pages mais incapable de detecter un
- * meme element livre a deux offsets differents.
  */
 export function resolveKey(item, absoluteIndex, itemKey) {
   if (itemKey && item !== null && typeof item === 'object') {
@@ -194,21 +201,57 @@ export function isLastPage({ limit, offset, total }) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Disponibilite de la collection
+ * ------------------------------------------------------------------ */
+
+/**
+ * Determine si la page initiale d'une collection peut etre consideree comme resolue.
+ *
+ * Sans cette distinction, un premier rendu ou `data` vaut `[]` parce que la collection
+ * n'a pas encore ete fetchee serait pris pour une page initiale vide, et le composant
+ * demanderait aussitot l'offset suivant : la page 0 serait sautee.
+ *
+ * Les indicateurs WeWeb (`isFetching`, `isFetched`) sont lus defensivement : leur
+ * presence n'est pas garantie selon la version du runtime.
+ */
+export function assessCollection(collection) {
+  if (!collection || typeof collection !== 'object') {
+    return { status: 'missing' };
+  }
+
+  if (collection.error) return { status: 'error', error: collection.error };
+  if (collection.isFetching === true) return { status: 'loading' };
+
+  const data = collection.data;
+  if (!Array.isArray(data)) {
+    // `isFetched === false` indique explicitement une collection pas encore chargee.
+    if (collection.isFetched === false) return { status: 'loading' };
+    if (data === null || data === undefined) return { status: 'loading' };
+    return { status: 'invalid' };
+  }
+
+  // Donnees presentes : la collection a servi au moins une reponse.
+  if (data.length > 0) return { status: 'ready', data };
+
+  // Tableau vide : fiable seulement si WeWeb confirme que le fetch a eu lieu.
+  if (collection.isFetched === true) return { status: 'ready', data };
+  if (collection.isFetched === undefined && collection.isFetching === false) {
+    return { status: 'ready', data };
+  }
+
+  return { status: 'loading' };
+}
+
+/* ------------------------------------------------------------------ *
  * Classification d'une page recue
  * ------------------------------------------------------------------ */
 
 /**
- * Determine comment traiter une nouvelle valeur de `content.items`.
+ * Determine comment traiter une nouvelle valeur des donnees de la collection.
  *
  * La discrimination porte sur l'offset amont, pas sur la seule existence d'une
  * requete en cours : une reponse tardive, ou un refetch declenche par WeWeb,
  * ne doit jamais etre confondue avec un changement de filtre.
- *
- * - `append` : l'offset amont correspond a la page demandee.
- * - `reset`  : aucune page n'etait demandee et l'offset amont est revenu a zero,
- *              signe que la requete a change (filtre, tri, refetch).
- * - `ignore` : une page est attendue mais l'offset amont ne correspond pas encore ;
- *              l'integrer melangerait deux paginations.
  */
 export function classifyIncoming({ pendingOffset, currentOffset = 0 }) {
   const hasPending = pendingOffset !== null && pendingOffset !== undefined;
@@ -229,17 +272,33 @@ export function classifyIncoming({ pendingOffset, currentOffset = 0 }) {
 /**
  * Classe une page accumulee pour decider de la suite.
  *
- * Distingue une fin normale d'une anomalie : dans le contexte vise, une page vide
- * avant la fin annoncee ou une page sans aucun element nouveau ne peut pas se
- * produire et trahit une incoherence (mauvaise cle, collision, reponse au mauvais
- * offset). La presenter comme une fin normale masquerait la cause.
+ * La couverture est evaluee avec le nombre d'elements REELLEMENT recus, pas avec la
+ * limite configuree : a l'offset 100 avec limit=50 et total=137, recevoir 10 lignes
+ * satisfait `offset + limit >= total` alors que seules 110 lignes sont couvertes.
+ * C'est une page incomplete, pas une fin de collection.
  */
 export function classifyPage({ incomingCount, added, pagination }) {
   const valid = validatePagination(pagination);
-  const atEnd = valid.ok ? isLastPage(valid) : false;
+
+  if (!valid.ok) {
+    // Sans metadonnees fiables, seule une page vide permet de conclure.
+    if (incomingCount === 0) return { outcome: 'end' };
+    if (added === 0) {
+      return {
+        outcome: 'error',
+        code: ERROR_CODES.DUPLICATE_PAGE,
+        message: ERROR_MESSAGES[ERROR_CODES.DUPLICATE_PAGE],
+      };
+    }
+    return { outcome: 'continue' };
+  }
+
+  const { offset, total } = valid;
+  const covered = offset + incomingCount;
+  const claimsLastPage = isLastPage(valid);
 
   if (incomingCount === 0) {
-    if (atEnd) return { outcome: 'end' };
+    if (total === 0 || covered >= total) return { outcome: 'end' };
     return { outcome: 'error', code: ERROR_CODES.EMPTY_PAGE, message: ERROR_MESSAGES[ERROR_CODES.EMPTY_PAGE] };
   }
 
@@ -251,27 +310,19 @@ export function classifyPage({ incomingCount, added, pagination }) {
     };
   }
 
-  if (atEnd) return { outcome: 'end' };
+  if (covered >= total) return { outcome: 'end' };
+
+  // La derniere page annoncee est arrivee mais ne couvre pas le total : la source est
+  // incoherente. Le signaler evite de presenter une liste tronquee comme complete.
+  if (claimsLastPage) {
+    return {
+      outcome: 'error',
+      code: ERROR_CODES.INCOMPLETE_PAGE,
+      message: `${ERROR_MESSAGES[ERROR_CODES.INCOMPLETE_PAGE]} (couvert=${covered}, total=${total})`,
+    };
+  }
+
   return { outcome: 'continue' };
-}
-
-/* ------------------------------------------------------------------ *
- * Source paginee
- * ------------------------------------------------------------------ */
-
-/**
- * Extrait l'identifiant de collection d'une valeur `PaginatedSource`, de la forme
- * `"collection:<uuid>"`. Retourne `null` pour toute autre forme, y compris
- * `tableView:<id>` qui n'est pas gere par ce composant.
- */
-export function parsePaginatedSource(value) {
-  if (!value || typeof value !== 'string') return null;
-  const separator = value.indexOf(':');
-  if (separator === -1) return null;
-  const type = value.slice(0, separator);
-  const id = value.slice(separator + 1);
-  if (type !== 'collection' || !id) return null;
-  return id;
 }
 
 /* ------------------------------------------------------------------ *
@@ -279,20 +330,22 @@ export function parsePaginatedSource(value) {
  * ------------------------------------------------------------------ */
 
 const TRANSITIONS = {
+  // La page initiale doit etre observee avant tout chargement.
+  [STATES.INITIALIZING]: [STATES.IDLE, STATES.ENDED, STATES.FAILED],
   [STATES.IDLE]: [STATES.LOADING, STATES.ENDED, STATES.FAILED],
   [STATES.LOADING]: [STATES.IDLE, STATES.TIMED_OUT, STATES.ENDED, STATES.FAILED],
   // Une reponse tardive peut encore resoudre une requete expiree.
   [STATES.TIMED_OUT]: [STATES.IDLE, STATES.ENDED, STATES.FAILED],
   // Terminaux, sauf reset legitime (changement de source ou de donnees initiales).
-  [STATES.ENDED]: [STATES.IDLE],
-  [STATES.FAILED]: [STATES.IDLE],
+  [STATES.ENDED]: [STATES.INITIALIZING, STATES.IDLE],
+  [STATES.FAILED]: [STATES.INITIALIZING, STATES.IDLE],
 };
 
 export function canTransition(from, to) {
   return (TRANSITIONS[from] || []).includes(to);
 }
 
-/** Seuls ces etats autorisent le declenchement d'un chargement. */
+/** Seul `idle` autorise le declenchement d'un chargement. */
 export function canLoad(state) {
   return state === STATES.IDLE;
 }

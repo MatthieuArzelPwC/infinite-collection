@@ -22,8 +22,8 @@ pagination incohérente.
 - filtres et tris **inchangés** pendant le défilement ;
 - données **non modifiées** pendant le défilement.
 
-La propriété `Source paginee` devrait être renseignée explicitement : l'auto-détection
-n'est qu'une commodité.
+Une **seule** propriété désigne la source : `Collection`. Aucun binding manuel sur
+`maCollection.data` n'est nécessaire.
 
 ## Installation
 
@@ -62,15 +62,13 @@ Sans limite : pas de `range()`, pas de `total`. Le composant s'arrête alors et 
 
 Une valeur de 50 est un bon point de départ.
 
-### 2. Binder la collection
+### 2. Sélectionner la collection
 
-Binder la propriété `Collection` sur `maCollection.data`.
+Choisir la collection dans la propriété `Collection` (onglet Settings). Cet unique
+identifiant sert à la fois à lire les données et à piloter la pagination.
 
-### 3. Renseigner la source paginée
-
-Sélectionner la collection dans `Source paginee`. Si le champ reste vide, le composant
-tente de la retrouver via le binding de `Collection` ; s'il échoue, il s'arrête avec le
-code `NO_SOURCE`.
+Seules les collections paginées sont proposées. Si aucune n'est sélectionnée, le
+composant reste inerte sans émettre d'erreur — il attend d'être configuré.
 
 ### 4. Fixer la hauteur
 
@@ -97,11 +95,21 @@ Le type fait partie de la clé : `5` (nombre) et `"5"` (texte) ne collisionnent 
 
 | Propriété | Rôle | Défaut |
 |---|---|---|
-| `Collection` | Collection à répéter, bindée sur `maCollection.data` | `[]` |
-| `Source paginee` | Collection à paginer. À renseigner de préférence | `null` |
+| `Collection` | Collection à afficher et paginer — source unique | `null` |
 | `Cle unique` | Champ scalaire identifiant un élément | `id` |
+| `Chargement manuel` | Lien cliquable au lieu du défilement automatique | `false` |
+| `Libelle du chargement manuel` | Texte du lien, si mode manuel | `Charger la suite` |
 | `Hauteur estimee d un element` | Alimente `contain-intrinsic-size` | `80` |
 | `Distance de declenchement` | Anticipation du chargement, en pixels | `300` |
+
+### Chargement manuel
+
+Avec `Chargement manuel` activé, un lien apparaît en fin de liste et la page suivante
+n'est chargée qu'au clic. Le défilement ne déclenche plus rien, et
+`Distance de declenchement` est masquée.
+
+Utile pour diagnostiquer la pagination : chaque clic correspond à exactement une
+requête, ce qui rend l'observation dans l'onglet Network sans ambiguïté.
 
 ## Événements
 
@@ -124,7 +132,9 @@ Charge utile : `code`, `message`.
 
 | Code | Cause |
 |---|---|
-| `NO_SOURCE` | ni `Source paginee` ni auto-détection n'ont abouti |
+| `NO_COLLECTION_SELECTED` | aucune collection choisie dans `Collection` |
+| `COLLECTION_NOT_FOUND` | identifiant renseigné mais absent du runtime WeWeb |
+| `COLLECTION_DATA_UNAVAILABLE` | les données ne sont pas une liste exploitable |
 | `API_UNAVAILABLE` | la pagination native WeWeb est absente de cette version |
 | `PAGINATION_READ_FAILED` | exception à la lecture des métadonnées |
 | `NO_METADATA` | la collection ne fournit pas d'informations de pagination |
@@ -133,7 +143,8 @@ Charge utile : `code`, `message`.
 | `INVALID_TOTAL` | total absent ou invalide — généralement une limite manquante |
 | `SET_OFFSET_FAILED` | la demande de page suivante a échoué |
 | `FETCH_TIMEOUT` | la page n'est pas arrivée dans le délai imparti |
-| `EMPTY_PAGE` | page vide reçue **avant** la fin annoncée |
+| `EMPTY_PAGE` | page vide reçue alors que le total annonçait des lignes |
+| `INCOMPLETE_PAGE` | la dernière page ne couvre pas le total annoncé |
 | `DUPLICATE_PAGE` | page reçue sans aucun élément nouveau |
 
 Dans tous les cas, **les éléments déjà affichés sont conservés** : une panne de
@@ -173,16 +184,28 @@ la dernière reçue.
 
 ## Comment la pagination est pilotée
 
-Le composant résout la collection à paginer dans cet ordre :
+L'identifiant choisi dans `Collection` sert à tout :
 
-1. propriété `Source paginee` ;
-2. auto-détection : parmi les collections du projet, celle dont `data` est la même
-   référence de tableau que celle bindée sur `Collection` ;
-3. échec : `error` avec le code `NO_SOURCE`, et arrêt.
+- les données, lues dans le store WeWeb ;
+- la limite, l'offset et le total, via `getPaginationOptions(id)` ;
+- la demande de page suivante, via `setOffset(id, offset)`.
 
-La pagination repose sur `wwLib.wwCollection.setOffset()` et `getPaginationOptions()`,
-utilisées en production par le Paginator WeWeb mais **absentes de la documentation
-publique**.
+Il n'y a plus d'auto-détection par égalité de référence, ni de seconde propriété à
+renseigner.
+
+### Dépendance aux APIs internes
+
+Trois mécanismes ne sont pas documentés comme API publique stable :
+
+| Mécanisme | Attesté par |
+|---|---|
+| `type: 'Collection'` + `options.paginated` | Paginator officiel WeWeb |
+| `getPaginationOptions(id)` / `setOffset(id, offset)` | Paginator officiel WeWeb |
+| `$store.getters['data/getCollections'][id]` | plugins officiels WeWeb |
+
+La lecture du store est isolée dans un `computed` unique (`selectedCollection`) : si le
+contrat WeWeb change, il n'y a qu'un point à corriger, et le composant émet
+`COLLECTION_NOT_FOUND` au lieu d'échouer silencieusement.
 
 ### Si ces APIs cessent de fonctionner
 
@@ -255,6 +278,7 @@ Le composant n'a **aucune dépendance runtime**.
 ### Machine à états
 
 ```
+initializing ──→ idle            page initiale observée
 idle ──→ loading ──→ idle        réponse reçue
                  ──→ timedOut    délai dépassé, verrou conservé
                  ──→ ended       fin de collection
@@ -263,15 +287,26 @@ timedOut ──→ idle | ended        réponse tardive intégrée
 ended | failed ──→ idle          reset légitime uniquement
 ```
 
-Seul `idle` autorise un nouveau chargement. Un changement de `Cle unique` ou de
-`Source paginee` constitue un reset légitime et débloque un état terminal.
+Seul `idle` autorise un nouveau chargement. `initializing` protège la page initiale :
+sans cet état, un tableau vide renvoyé par une collection pas encore fetchée serait pris
+pour une page 0 vide, et le composant demanderait aussitôt l'offset suivant — la
+première page serait sautée.
+
+Un changement de `Cle unique` ou de `Collection` constitue un reset légitime et
+débloque un état terminal. Chaque changement de collection incrémente une génération
+interne : un timer ou un callback de l'ancienne source ne peut plus modifier l'état de
+la nouvelle.
 
 ## Validation dans le studio
 
 ### Scénario nominal
 
-Collection Supabase de 500 lignes ou plus, limite 50, `Source paginee` sélectionnée,
+Collection Supabase de 500 lignes ou plus, limite 50, sélectionnée dans `Collection`,
 clé primaire en `Cle unique`, hauteur 30vh, tri incluant une colonne unique.
+
+Commencer avec `Chargement manuel` activé : un clic doit produire exactement une
+requête. Une fois ce comportement confirmé, désactiver le mode manuel pour vérifier le
+déclenchement au défilement.
 
 À vérifier :
 
@@ -296,6 +331,18 @@ nombre de nœuds DOM, temps de scripting et de layout, coût de montage des `wwE
 
 Déclencher l'étude d'une virtualisation réelle si le défilement devient instable, si la
 mémoire devient excessive, ou si le montage des composants domine le profil.
+
+## Migration depuis la version à deux propriétés
+
+Les versions antérieures demandaient de binder `Collection` sur `maCollection.data`
+**et** de sélectionner la même collection dans `Source paginee`. Ces deux propriétés
+ont été supprimées.
+
+Sur une instance déjà posée dans le studio : sélectionner la collection dans la nouvelle
+propriété `Collection`. Les anciennes valeurs sont ignorées.
+
+Aucune migration automatique n'est effectuée : elle supposerait un mécanisme de mise à
+jour du contenu des composants déjà publiés que WeWeb ne garantit pas.
 
 ## Publication
 

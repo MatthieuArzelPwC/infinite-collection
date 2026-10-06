@@ -14,6 +14,8 @@ import { dirname, join } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const source = readFileSync(join(root, 'src/wwElement.vue'), 'utf8');
+const logicSource = readFileSync(join(root, 'src/logic.mjs'), 'utf8');
+const logic = await import(new URL('../src/logic.mjs', import.meta.url).href);
 
 // `ww-config.js` doit garder ce nom et cette extension (contrat WeWeb) tout en
 // etant un module ES. Node le lirait comme du CommonJS : on l'evalue donc via une
@@ -64,8 +66,64 @@ test('tout evenement declare est effectivement emis', () => {
   assert.deepEqual(unused, [], `evenements declares mais jamais emis : ${unused.join(', ')}`);
 });
 
-test('items est bindable en repeatable', () => {
-  assert.equal(config.properties.items.bindable, 'repeatable');
+test('la source est une collection unique et non bindable', () => {
+  const { collectionId } = config.properties;
+  assert.equal(collectionId.type, 'Collection');
+  assert.equal(collectionId.options.paginated, true);
+  assert.equal(collectionId.defaultValue, null);
+  assert.notEqual(collectionId.bindable, true, 'un ID de collection ne se binde pas');
+});
+
+test('les anciennes proprietes de source ont disparu', () => {
+  // Designer deux fois la meme collection permettait d'en selectionner deux
+  // differentes, avec une auto-detection par egalite de reference fragile.
+  assert.equal(config.properties.items, undefined);
+  assert.equal(config.properties.paginatedSource, undefined);
+  assert.doesNotMatch(source, /parsePaginatedSource/);
+  assert.doesNotMatch(source, /content\.items/);
+});
+
+test('le mode manuel est un booleen desactive par defaut', () => {
+  const { manualLoad } = config.properties;
+  assert.equal(manualLoad.type, 'OnOff');
+  assert.equal(manualLoad.defaultValue, false);
+  assert.equal(manualLoad.section, 'settings');
+});
+
+test('le libelle du chargement manuel est masque hors mode manuel', () => {
+  const { manualLoadLabel } = config.properties;
+  assert.equal(typeof manualLoadLabel.hidden, 'function');
+  assert.equal(manualLoadLabel.hidden({ manualLoad: false }), true);
+  assert.equal(manualLoadLabel.hidden({ manualLoad: true }), false);
+});
+
+test('la distance de declenchement est masquee en mode manuel', () => {
+  const { rootMargin } = config.properties;
+  assert.equal(rootMargin.hidden({ manualLoad: true }), true);
+  assert.equal(rootMargin.hidden({ manualLoad: false }), false);
+});
+
+test('le chargement n est plus bloque en mode edition', () => {
+  // Ce garde-fou empechait tout chargement dans le studio : le composant ne
+  // paginait jamais pendant l'edition de la page.
+  assert.doesNotMatch(source, /if \(isEditing\.value\) return/);
+});
+
+test('la page initiale est protegee par un etat dedie', () => {
+  assert.match(source, /STATES\.INITIALIZING/);
+  assert.match(source, /assessCollection/);
+});
+
+test('une generation de source invalide les callbacks de l ancienne collection', () => {
+  assert.match(source, /sourceGeneration/);
+  assert.match(source, /generation !== sourceGeneration\.value/);
+});
+
+test('l acces au store est centralise', () => {
+  // Un seul appel reel au getter interne : un changement de contrat WeWeb n'a
+  // qu'un point d'impact. Les mentions en commentaire sont ignorees.
+  const accesses = source.match(/getters\?\.\['data\/getCollections'\]/g) || [];
+  assert.equal(accesses.length, 1, 'un seul point d acces au store interne WeWeb');
 });
 
 test('itemElement est cache et instancie une Flexbox WeWeb', () => {
@@ -148,4 +206,31 @@ test('tous les timers sont annules au demontage', () => {
 test('la machine a etats est utilisee pour autoriser les chargements', () => {
   assert.match(source, /canLoad\(state\.value\)/, 'le declenchement doit passer par canLoad');
   assert.doesNotMatch(source, /isExhausted/, 'isExhausted doit avoir ete remplace par la machine a etats');
+});
+
+test('une collection introuvable produit une erreur dediee', () => {
+  // Un identifiant renseigne mais absent du store signale une selection obsolete,
+  // qu'il ne faut pas confondre avec un chargement en cours.
+  assert.match(source, /ERROR_CODES\.COLLECTION_NOT_FOUND/);
+  assert.match(source, /COLLECTION_LOOKUP_GRACE_MS/);
+});
+
+test('tout code declare a un message et un emetteur', () => {
+  const declared = Object.keys(logic.ERROR_CODES);
+
+  // Un code sans message produirait « Erreur de pagination inconnue » dans le studio.
+  const withoutMessage = declared.filter(code => !logic.ERROR_MESSAGES[logic.ERROR_CODES[code]]);
+  assert.deepEqual(withoutMessage, [], `codes sans message : ${withoutMessage.join(', ')}`);
+
+  // Un code doit etre emis soit directement par le composant, soit relaye depuis
+  // logic.mjs via `fail(verdict.code)` ou `fail(pagination.code)`.
+  const relayed = /fail\((?:verdict|pagination|plan|source)\.code\)/.test(source);
+  const orphans = declared.filter(code => !source.includes(code) && !relayed);
+  assert.deepEqual(orphans, [], `codes jamais atteignables : ${orphans.join(', ')}`);
+});
+
+test('les codes produits par logic.mjs sont relayes au workflow', () => {
+  for (const relay of ['fail(verdict.code)', 'fail(pagination.code)', 'fail(plan.code)']) {
+    assert.ok(source.includes(relay), `${relay} doit relayer le code au workflow`);
+  }
 });

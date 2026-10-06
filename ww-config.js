@@ -3,8 +3,8 @@
 // A corriger au premier test dans le studio si l'element ne se materialise pas.
 const WW_FLEXBOX_TYPE = 'b783dc65-d528-4f74-8c14-e27c934c39b1';
 
-const itemsHelp =
-  "La collection a repeter. Binder sur `maCollection.data`.\n\nLa collection DOIT avoir une limite configuree dans le studio (ex: 50) : c'est cette limite qui active la pagination serveur cote plugin.";
+const collectionHelp =
+  "Collection a afficher et a paginer. Un seul choix suffit : le composant en lit les donnees, la limite, l'offset et le total.\n\nLa collection DOIT avoir une limite configuree (ex: 50) : c'est elle qui active la pagination serveur.";
 
 const itemKeyHelp =
   "Nom du champ qui identifie un element de maniere unique (ex: `id`), idealement la cle primaire. La valeur doit etre scalaire (texte, nombre, booleen), stable et unique dans toute la collection. Une cle objet ou absente fait retomber sur l'index absolu, dont la deduplication est moins fiable.";
@@ -14,6 +14,9 @@ const estimatedItemHeightHelp =
 
 const rootMarginHelp =
   "Distance en pixels avant la fin de la liste a laquelle le chargement de la page suivante est declenche. Plus la valeur est elevee, plus le chargement est anticipe.";
+
+const manualLoadHelp =
+  "Affiche un lien cliquable en fin de liste pour charger la page suivante a la demande, au lieu de la charger automatiquement au defilement.\n\nUtile pour diagnostiquer la pagination, ou lorsque le defilement automatique n'est pas souhaite.";
 
 export default {
   options: {
@@ -28,7 +31,6 @@ export default {
     bubble: {
       icon: 'list',
     },
-    customStylePropertiesOrder: ['items'],
   },
   triggerEvents: [
     {
@@ -48,27 +50,20 @@ export default {
     },
   ],
   properties: {
-    items: {
+    collectionId: {
       label: {
         en: 'Collection',
         fr: 'Collection',
       },
-      type: 'Array',
+      section: 'settings',
+      type: 'Collection',
       options: {
-        item: {
-          type: 'Object',
-          defaultValue: {},
-        },
+        paginated: true,
       },
-      bindable: 'repeatable',
-      defaultValue: [],
+      defaultValue: null,
       /* wwEditor:start */
-      bindingValidation: {
-        validations: [{ type: 'array' }, { type: 'object' }],
-        tooltip: itemsHelp,
-      },
       propertyHelp: {
-        tooltip: itemsHelp,
+        tooltip: collectionHelp,
       },
       /* wwEditor:end */
     },
@@ -78,20 +73,6 @@ export default {
         isWwObject: true,
         type: WW_FLEXBOX_TYPE,
       },
-    },
-    paginatedSource: {
-      label: {
-        en: 'Paginated source',
-        fr: 'Source paginee',
-      },
-      type: 'PaginatedSource',
-      defaultValue: null,
-      /* wwEditor:start */
-      propertyHelp: {
-        tooltip:
-          "Collection a paginer. Recommande : la selectionner explicitement. Si ce champ reste vide, le composant tente de retrouver automatiquement la collection a partir du binding de `Collection`. Si aucune source n'est resolue, le composant s'arrete et emet l'evenement `On error`.",
-      },
-      /* wwEditor:end */
     },
     itemKey: {
       label: {
@@ -112,6 +93,43 @@ export default {
       },
       propertyHelp: {
         tooltip: itemKeyHelp,
+      },
+      /* wwEditor:end */
+    },
+    manualLoad: {
+      label: {
+        en: 'Manual load',
+        fr: 'Chargement manuel',
+      },
+      section: 'settings',
+      type: 'OnOff',
+      bindable: true,
+      defaultValue: false,
+      /* wwEditor:start */
+      bindingValidation: {
+        type: 'boolean',
+        tooltip: manualLoadHelp,
+      },
+      propertyHelp: {
+        tooltip: manualLoadHelp,
+      },
+      /* wwEditor:end */
+    },
+    manualLoadLabel: {
+      label: {
+        en: 'Manual load label',
+        fr: 'Libelle du chargement manuel',
+      },
+      section: 'settings',
+      type: 'Text',
+      bindable: true,
+      multiLang: true,
+      defaultValue: { en: 'Load more', fr: 'Charger la suite' },
+      hidden: content => !content.manualLoad,
+      /* wwEditor:start */
+      bindingValidation: {
+        type: 'string',
+        tooltip: 'Texte du lien de chargement manuel.',
       },
       /* wwEditor:end */
     },
@@ -153,6 +171,7 @@ export default {
         max: 3000,
         step: 50,
       },
+      hidden: content => !!content.manualLoad,
       /* wwEditor:start */
       bindingValidation: {
         type: 'number',

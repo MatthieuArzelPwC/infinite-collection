@@ -20,7 +20,7 @@ import {
   isLastPage,
   classifyIncoming,
   classifyPage,
-  parsePaginatedSource,
+  assessCollection,
   canTransition,
   canLoad,
   transition,
@@ -338,13 +338,27 @@ test('classifyPage termine sur la derniere page', () => {
   assert.equal(verdict.outcome, 'end');
 });
 
-test('classifyPage termine sur une page vide a la fin annoncee', () => {
+test('classifyPage termine sur une page vide quand le total est couvert', () => {
+  // offset 500 et total 500 : toutes les lignes sont deja couvertes, une page vide
+  // confirme simplement la fin.
+  const verdict = classifyPage({
+    incomingCount: 0,
+    added: 0,
+    pagination: { limit: 50, offset: 500, total: 500 },
+  });
+  assert.equal(verdict.outcome, 'end');
+});
+
+test('classifyPage signale une page vide alors que des lignes sont annoncees', () => {
+  // offset 450 avec total 500 : 50 lignes devraient arriver. En recevoir zero est une
+  // anomalie, pas une fin de collection.
   const verdict = classifyPage({
     incomingCount: 0,
     added: 0,
     pagination: { limit: 50, offset: 450, total: 500 },
   });
-  assert.equal(verdict.outcome, 'end');
+  assert.equal(verdict.outcome, 'error');
+  assert.equal(verdict.code, ERROR_CODES.EMPTY_PAGE);
 });
 
 test('classifyPage signale une page vide avant la fin annoncee', () => {
@@ -384,6 +398,7 @@ test('classifyPage prefere l anomalie de duplication a la fin de collection', ()
 
 test('seul idle autorise un chargement', () => {
   assert.equal(canLoad(STATES.IDLE), true);
+  assert.equal(canLoad(STATES.INITIALIZING), false);
   assert.equal(canLoad(STATES.LOADING), false);
   assert.equal(canLoad(STATES.TIMED_OUT), false);
   assert.equal(canLoad(STATES.ENDED), false);
@@ -413,6 +428,108 @@ test('les etats terminaux ne repartent que par un reset', () => {
   assert.equal(canTransition(STATES.FAILED, STATES.LOADING), false);
   assert.equal(canTransition(STATES.ENDED, STATES.IDLE), true);
   assert.equal(canTransition(STATES.FAILED, STATES.IDLE), true);
+  assert.equal(canTransition(STATES.ENDED, STATES.INITIALIZING), true);
+});
+
+test('initializing ne permet pas de charger avant la page initiale', () => {
+  // Sans cette garde, un `[]` de collection non fetchee serait pris pour une page
+  // initiale vide et la page 0 serait sautee.
+  assert.equal(canLoad(STATES.INITIALIZING), false);
+  assert.equal(canTransition(STATES.INITIALIZING, STATES.IDLE), true);
+  assert.equal(canTransition(STATES.INITIALIZING, STATES.LOADING), false);
+});
+
+/* ================================================================== *
+ * assessCollection
+ * ================================================================== */
+
+test('assessCollection signale une collection absente', () => {
+  assert.equal(assessCollection(null).status, 'missing');
+  assert.equal(assessCollection(undefined).status, 'missing');
+  assert.equal(assessCollection('nope').status, 'missing');
+});
+
+test('assessCollection signale un chargement en cours', () => {
+  assert.equal(assessCollection({ isFetching: true, data: [] }).status, 'loading');
+  assert.equal(assessCollection({ isFetched: false, data: [] }).status, 'loading');
+  assert.equal(assessCollection({ data: null }).status, 'loading');
+  assert.equal(assessCollection({ data: undefined }).status, 'loading');
+});
+
+test('assessCollection ne confond pas un tableau vide non fetche avec une page vide', () => {
+  // Cas central du saut de page initiale.
+  assert.equal(assessCollection({ data: [] }).status, 'loading');
+});
+
+test('assessCollection accepte un tableau vide confirme comme fetche', () => {
+  assert.equal(assessCollection({ data: [], isFetched: true }).status, 'ready');
+  assert.equal(assessCollection({ data: [], isFetching: false }).status, 'ready');
+});
+
+test('assessCollection accepte des donnees presentes', () => {
+  const assessment = assessCollection({ data: [{ id: 1 }] });
+  assert.equal(assessment.status, 'ready');
+  assert.deepEqual(assessment.data, [{ id: 1 }]);
+});
+
+test('assessCollection signale une erreur de collection', () => {
+  assert.equal(assessCollection({ error: { message: 'boom' }, data: [] }).status, 'error');
+});
+
+test('assessCollection signale des donnees non exploitables', () => {
+  assert.equal(assessCollection({ data: 'texte' }).status, 'invalid');
+  assert.equal(assessCollection({ data: 42 }).status, 'invalid');
+});
+
+/* ================================================================== *
+ * Page incomplete
+ * ================================================================== */
+
+test('classifyPage signale une page finale trop courte', () => {
+  // offset 100 + limit 50 >= total 137 est vrai, mais seules 110 lignes sont
+  // couvertes : la liste serait tronquee en se declarant complete.
+  const verdict = classifyPage({
+    incomingCount: 10,
+    added: 10,
+    pagination: { limit: 50, offset: 100, total: 137 },
+  });
+  assert.equal(verdict.outcome, 'error');
+  assert.equal(verdict.code, ERROR_CODES.INCOMPLETE_PAGE);
+});
+
+test('classifyPage accepte une page finale partielle coherente', () => {
+  const verdict = classifyPage({
+    incomingCount: 37,
+    added: 37,
+    pagination: { limit: 50, offset: 100, total: 137 },
+  });
+  assert.equal(verdict.outcome, 'end', '100 + 37 = 137 : le total est couvert');
+});
+
+test('classifyPage fonde la couverture sur le nombre recu, pas sur la limite', () => {
+  const short = classifyPage({
+    incomingCount: 20,
+    added: 20,
+    pagination: { limit: 50, offset: 50, total: 100 },
+  });
+  assert.equal(short.outcome, 'error');
+  assert.equal(short.code, ERROR_CODES.INCOMPLETE_PAGE);
+
+  const exact = classifyPage({
+    incomingCount: 50,
+    added: 50,
+    pagination: { limit: 50, offset: 50, total: 100 },
+  });
+  assert.equal(exact.outcome, 'end');
+});
+
+test('classifyPage reste prudent sans metadonnees fiables', () => {
+  assert.equal(classifyPage({ incomingCount: 0, added: 0, pagination: null }).outcome, 'end');
+  assert.equal(classifyPage({ incomingCount: 10, added: 10, pagination: null }).outcome, 'continue');
+  assert.equal(
+    classifyPage({ incomingCount: 10, added: 0, pagination: null }).code,
+    ERROR_CODES.DUPLICATE_PAGE
+  );
 });
 
 test('transition rejette une transition illegale sans corrompre l etat', () => {
@@ -425,23 +542,6 @@ test('transition rejette une transition illegale sans corrompre l etat', () => {
 test('transition vers le meme etat ne change rien', () => {
   const result = transition(STATES.LOADING, STATES.LOADING);
   assert.equal(result.changed, false);
-});
-
-/* ================================================================== *
- * parsePaginatedSource
- * ================================================================== */
-
-test('parsePaginatedSource lit le format collection:<uuid>', () => {
-  assert.equal(parsePaginatedSource('collection:abc-123'), 'abc-123');
-  assert.equal(parsePaginatedSource('tableView:abc-123'), null);
-  assert.equal(parsePaginatedSource('collection:'), null);
-  assert.equal(parsePaginatedSource('abc-123'), null);
-  assert.equal(parsePaginatedSource(null), null);
-  assert.equal(parsePaginatedSource(''), null);
-});
-
-test('parsePaginatedSource preserve un uuid contenant des deux-points', () => {
-  assert.equal(parsePaginatedSource('collection:a:b'), 'a:b');
 });
 
 /* ================================================================== *
@@ -494,12 +594,13 @@ test('total surestime : la page vide prematuree est signalee comme anomalie', ()
   assert.equal(outcome.code, ERROR_CODES.EMPTY_PAGE);
 });
 
-test('une page vide sur la derniere page annoncee reste une fin normale', () => {
-  // offset 100 + limit 50 >= total 150 : la pagination est coherente, la page vide
-  // signifie simplement que le total etait legerement surestime en bord de page.
+test('un total surestime en bord de page est signale, pas masque', () => {
+  // La source annonce 150 lignes mais n'en sert que 60 : le total est faux. Le
+  // signaler vaut mieux que presenter une liste tronquee comme complete.
   const { items, outcome } = drain(createSource(60, 50, 150));
   assert.equal(items.length, 60);
-  assert.equal(outcome.outcome, 'end');
+  assert.equal(outcome.outcome, 'error');
+  assert.equal(outcome.code, ERROR_CODES.EMPTY_PAGE);
 });
 
 test('pages qui se chevauchent : deduplication effective', () => {

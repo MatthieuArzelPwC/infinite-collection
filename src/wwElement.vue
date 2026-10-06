@@ -17,6 +17,16 @@
     </div>
     <!-- wwEditor:end -->
 
+    <button
+      v-if="showManualTrigger"
+      type="button"
+      class="ic__more"
+      :disabled="isBusy"
+      @click="onManualLoad"
+    >
+      {{ isBusy ? busyLabel : manualLabel }}
+    </button>
+
     <div ref="sentinel" class="ic__sentinel" aria-hidden="true"></div>
   </div>
 </template>
@@ -33,7 +43,7 @@ import {
   planNextFetch,
   classifyIncoming,
   classifyPage,
-  parsePaginatedSource,
+  assessCollection,
   canLoad,
   transition,
 } from './logic.mjs';
@@ -42,6 +52,10 @@ import {
 // n'est PAS libere : une reponse tardive doit encore pouvoir etre integree, sans quoi
 // elle serait prise pour un changement de filtre et effacerait les pages accumulees.
 const FETCH_TIMEOUT_MS = 10000;
+
+// Une collection peut n'apparaitre dans le store qu'apres le montage du composant.
+// On patiente avant de conclure qu'un identifiant est obsolete.
+const COLLECTION_LOOKUP_GRACE_MS = 3000;
 
 export default {
   props: {
@@ -60,22 +74,30 @@ export default {
     const accumulator = ref([]);
     const keys = ref(new Set());
 
-    // Offset de la page demandee, en attente de confirmation par un changement de
-    // `content.items`. `null` = aucune page en vol.
+    // Offset de la page demandee, en attente de confirmation par un changement des
+    // donnees de la collection. `null` = aucune page en vol.
     const pendingOffset = ref(null);
-    const state = ref(STATES.IDLE);
+    const state = ref(STATES.INITIALIZING);
+
+    // Incrementee a chaque changement de collection : un callback asynchrone de
+    // l'ancienne source ne doit pas modifier l'etat de la nouvelle.
+    const sourceGeneration = ref(0);
 
     let fetchTimeout = null;
     let observer = null;
     let scrollTarget = null;
     let observerRetryTimer = null;
+    // Instant du premier constat d'absence de la collection dans le store.
+    let missingSince = null;
+    let lookupTimer = null;
 
-    const isEditing = computed(() => {
-      /* wwEditor:start */
-      return props.wwEditorState.editMode === wwLib.wwEditorHelper.EDIT_MODES.EDITION;
-      /* wwEditor:end */
-      // eslint-disable-next-line no-unreachable
-      return false;
+    /* -------------------------------------------------------------- *
+     * Proprietes derivees
+     * -------------------------------------------------------------- */
+
+    const collectionId = computed(() => {
+      const raw = props.content.collectionId;
+      return typeof raw === 'string' && raw.length ? raw : null;
     });
 
     const itemKey = computed(() => {
@@ -83,12 +105,41 @@ export default {
       return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
     });
 
+    const isManual = computed(() => !!props.content.manualLoad);
+
+    const manualLabel = computed(() => {
+      const raw = props.content.manualLoadLabel;
+      const resolved = typeof raw === 'object' && raw !== null ? wwLib.wwLang.getText(raw) : raw;
+      return typeof resolved === 'string' && resolved.trim() ? resolved : 'Charger la suite';
+    });
+
+    const busyLabel = computed(() => '...');
+
+    const isBusy = computed(() => state.value === STATES.LOADING);
+
+    /**
+     * Acces unique au store WeWeb.
+     *
+     * `data/getCollections` est une API interne, non documentee comme stable : tout le
+     * composant passe par ici pour qu'un changement de contrat n'ait qu'un seul point
+     * d'impact.
+     */
+    const selectedCollection = computed(() => {
+      const id = collectionId.value;
+      if (!id) return null;
+      try {
+        return wwLib.$store?.getters?.['data/getCollections']?.[id] ?? null;
+      } catch (error) {
+        wwLib.wwLog?.error?.('[infinite-collection] lecture du store impossible', error);
+        return null;
+      }
+    });
+
+    const collectionStatus = computed(() => assessCollection(selectedCollection.value));
+
     const incomingItems = computed(() => {
-      const raw = props.content.items;
-      if (Array.isArray(raw)) return raw;
-      // Une collection non encore fetchee peut arriver sous forme d'objet { data: [...] }.
-      if (raw && Array.isArray(raw.data)) return raw.data;
-      return [];
+      const assessment = collectionStatus.value;
+      return assessment.status === 'ready' ? assessment.data : [];
     });
 
     const entries = computed(() =>
@@ -103,6 +154,12 @@ export default {
       const height = Number(props.content.estimatedItemHeight);
       const safeHeight = Number.isFinite(height) && height > 0 ? height : 80;
       return { '--ic-item-height': `${safeHeight}px` };
+    });
+
+    /** Le lien manuel n'a de sens que s'il reste quelque chose a charger. */
+    const showManualTrigger = computed(() => {
+      if (!isManual.value) return false;
+      return state.value === STATES.IDLE || state.value === STATES.LOADING;
     });
 
     /* -------------------------------------------------------------- *
@@ -139,39 +196,10 @@ export default {
      * Acces a la pagination WeWeb
      * -------------------------------------------------------------- */
 
-    /**
-     * Resout l'identifiant de la collection a paginer :
-     *   1. propriete `Source paginee` ;
-     *   2. auto-detection, en cherchant la collection dont `data` est la meme
-     *      reference de tableau que celle bindee sur `Collection`.
-     *
-     * Retourne un resultat structure : une panne doit etre identifiable, pas
-     * silencieusement convertie en absence de donnee.
-     */
-    const resolveCollection = () => {
-      const raw = props.content.paginatedSource;
-      if (typeof raw === 'string' && raw.length) {
-        const id = parsePaginatedSource(raw);
-        if (id) return { ok: true, id };
-        return describeError(ERROR_CODES.NO_SOURCE, `source=${raw}`);
-      }
+    const readPagination = () => {
+      const id = collectionId.value;
+      if (!id) return describeError(ERROR_CODES.NO_COLLECTION_SELECTED);
 
-      try {
-        const collections = wwLib.$store?.getters?.['data/getCollections'];
-        const target = props.content.items;
-        if (collections && Array.isArray(target)) {
-          for (const collection of Object.values(collections)) {
-            if (collection && collection.data === target) return { ok: true, id: collection.id };
-          }
-        }
-      } catch (error) {
-        return describeError(ERROR_CODES.NO_SOURCE, error?.message || String(error));
-      }
-
-      return describeError(ERROR_CODES.NO_SOURCE);
-    };
-
-    const readPagination = collectionId => {
       const api = wwLib.wwCollection;
       if (!api || typeof api.getPaginationOptions !== 'function' || typeof api.setOffset !== 'function') {
         return describeError(ERROR_CODES.API_UNAVAILABLE);
@@ -179,7 +207,7 @@ export default {
 
       let raw;
       try {
-        raw = api.getPaginationOptions(collectionId);
+        raw = api.getPaginationOptions(id);
       } catch (error) {
         return describeError(ERROR_CODES.PAGINATION_READ_FAILED, error?.message || String(error));
       }
@@ -187,11 +215,9 @@ export default {
       return validatePagination(raw);
     };
 
-    /** Metadonnees courantes, ou `null` si indisponibles. Ne leve pas d'erreur. */
+    /** Metadonnees courantes, ou `null` si indisponibles. N'emet pas d'erreur. */
     const currentPagination = () => {
-      const source = resolveCollection();
-      if (!source.ok) return null;
-      const pagination = readPagination(source.id);
+      const pagination = readPagination();
       return pagination.ok ? pagination : null;
     };
 
@@ -203,6 +229,12 @@ export default {
       if (fetchTimeout === null) return;
       clearTimeout(fetchTimeout);
       fetchTimeout = null;
+    };
+
+    const clearLookupTimer = () => {
+      if (lookupTimer === null) return;
+      clearTimeout(lookupTimer);
+      lookupTimer = null;
     };
 
     const safeRootMargin = () => {
@@ -219,16 +251,15 @@ export default {
     };
 
     const loadMore = () => {
-      if (isEditing.value) return;
       if (!canLoad(state.value)) return;
 
-      const source = resolveCollection();
-      if (!source.ok) {
-        fail(source.code);
+      const id = collectionId.value;
+      if (!id) {
+        fail(ERROR_CODES.NO_COLLECTION_SELECTED);
         return;
       }
 
-      const pagination = readPagination(source.id);
+      const pagination = readPagination();
       if (!pagination.ok) {
         fail(pagination.code);
         return;
@@ -249,9 +280,13 @@ export default {
       if (!goTo(STATES.LOADING)) return;
       pendingOffset.value = plan.offset;
 
+      const generation = sourceGeneration.value;
+
       clearFetchTimeout();
       fetchTimeout = setTimeout(() => {
         fetchTimeout = null;
+        // Un timeout de l'ancienne source ne doit pas affecter la nouvelle.
+        if (generation !== sourceGeneration.value) return;
         // Le verrou et `pendingOffset` sont volontairement conserves : une reponse
         // tardive correspondant a cet offset doit encore pouvoir etre accumulee.
         if (state.value !== STATES.LOADING) return;
@@ -266,7 +301,7 @@ export default {
       }, FETCH_TIMEOUT_MS);
 
       try {
-        wwLib.wwCollection.setOffset(source.id, plan.offset);
+        wwLib.wwCollection.setOffset(id, plan.offset);
       } catch (error) {
         clearFetchTimeout();
         pendingOffset.value = null;
@@ -286,11 +321,25 @@ export default {
       });
     };
 
+    const onManualLoad = () => {
+      if (!canLoad(state.value)) return;
+      loadMore();
+    };
+
+    /** Enchaine si la liste ne remplit pas encore la zone de defilement. */
+    const continueIfNeeded = () => {
+      if (isManual.value) return;
+      nextTick(() => {
+        if (!canLoad(state.value)) return;
+        if (isSentinelNear()) loadMore();
+      });
+    };
+
     /* -------------------------------------------------------------- *
      * Reception des pages
      * -------------------------------------------------------------- */
 
-    const applyReset = (incoming, offset) => {
+    const resetAll = (incoming, offset) => {
       const result = resetItems({ incoming, offset, itemKey: itemKey.value });
       accumulator.value = result.items;
       keys.value = result.keys;
@@ -301,8 +350,68 @@ export default {
     };
 
     watch(
-      incomingItems,
-      incoming => {
+      [incomingItems, collectionStatus],
+      () => {
+        const assessment = collectionStatus.value;
+
+        // Aucune collection choisie : rien a faire, et surtout pas d'erreur tant que
+        // l'utilisateur n'a pas fini de configurer le composant.
+        if (!collectionId.value) {
+          state.value = STATES.INITIALIZING;
+          return;
+        }
+
+        // Tant que la page initiale n'est pas resolue, ne rien demander : interpreter
+        // un `[]` de collection non fetchee comme une page vide ferait sauter la
+        // page 0 en demandant immediatement l'offset suivant.
+        if (assessment.status === 'loading') {
+          if (state.value === STATES.LOADING || state.value === STATES.TIMED_OUT) return;
+          state.value = STATES.INITIALIZING;
+          return;
+        }
+
+        // Un identifiant renseigne mais absent du store signale une selection
+        // obsolete (collection supprimee ou renommee), distincte d'un chargement.
+        if (assessment.status === 'missing') {
+          state.value = STATES.INITIALIZING;
+          if (missingSince === null) missingSince = Date.now();
+
+          if (Date.now() - missingSince >= COLLECTION_LOOKUP_GRACE_MS) {
+            fail(ERROR_CODES.COLLECTION_NOT_FOUND, `id=${collectionId.value}`);
+            return;
+          }
+
+          // Rien ne garantit une nouvelle notification du store : on reverifie nous
+          // memes a l'expiration du delai de grace.
+          if (lookupTimer === null) {
+            const generation = sourceGeneration.value;
+            lookupTimer = setTimeout(() => {
+              lookupTimer = null;
+              if (generation !== sourceGeneration.value) return;
+              if (collectionStatus.value.status !== 'missing') return;
+              fail(ERROR_CODES.COLLECTION_NOT_FOUND, `id=${collectionId.value}`);
+            }, COLLECTION_LOOKUP_GRACE_MS);
+          }
+          return;
+        }
+
+        missingSince = null;
+        clearLookupTimer();
+
+        if (assessment.status === 'invalid') {
+          fail(ERROR_CODES.COLLECTION_DATA_UNAVAILABLE);
+          return;
+        }
+
+        if (assessment.status === 'error') {
+          fail(
+            ERROR_CODES.PAGINATION_READ_FAILED,
+            assessment.error?.message || 'la collection est en erreur'
+          );
+          return;
+        }
+
+        const incoming = assessment.data;
         const pagination = currentPagination();
         const currentOffset = pagination ? pagination.offset : 0;
 
@@ -316,71 +425,98 @@ export default {
         if (mode === 'ignore') return;
 
         if (mode === 'reset') {
-          applyReset(incoming, offset);
-        } else {
-          const result = mergeItems({
-            current: accumulator.value,
-            keys: keys.value,
-            incoming,
-            offset,
-            itemKey: itemKey.value,
-          });
-          accumulator.value = result.items;
-          keys.value = result.keys;
-
-          // La page attendue est arrivee : le verrou se libere, meme si le delai
-          // avait expire entre-temps.
+          const reset = resetItems({ incoming, offset, itemKey: itemKey.value });
+          accumulator.value = reset.items;
+          keys.value = reset.keys;
           pendingOffset.value = null;
           clearFetchTimeout();
-          if (state.value === STATES.LOADING || state.value === STATES.TIMED_OUT) {
-            state.value = STATES.IDLE;
+          state.value = STATES.IDLE;
+
+          // Collection reellement vide : inutile de demander une page suivante.
+          if (pagination && pagination.total === 0) {
+            finish(0);
+            return;
           }
 
           const verdict = classifyPage({
             incomingCount: incoming.length,
-            added: result.added,
+            added: reset.added,
             pagination,
           });
-
-          if (verdict.outcome === 'error') {
-            fail(verdict.code);
-            return;
-          }
           if (verdict.outcome === 'end') {
             finish(pagination ? pagination.total : null);
             return;
           }
+          if (verdict.outcome === 'error') {
+            fail(verdict.code);
+            return;
+          }
+
+          continueIfNeeded();
+          return;
         }
 
-        // La liste vient de grandir : si la sentinelle reste visible (page trop
-        // courte pour remplir la zone de scroll), on enchaine immediatement.
-        nextTick(() => {
-          if (!canLoad(state.value)) return;
-          if (isSentinelNear()) loadMore();
+        const result = mergeItems({
+          current: accumulator.value,
+          keys: keys.value,
+          incoming,
+          offset,
+          itemKey: itemKey.value,
         });
+        accumulator.value = result.items;
+        keys.value = result.keys;
+
+        // La page attendue est arrivee : le verrou se libere, meme si le delai avait
+        // expire entre-temps.
+        pendingOffset.value = null;
+        clearFetchTimeout();
+        if (state.value === STATES.LOADING || state.value === STATES.TIMED_OUT) {
+          state.value = STATES.IDLE;
+        }
+
+        const verdict = classifyPage({
+          incomingCount: incoming.length,
+          added: result.added,
+          pagination,
+        });
+
+        if (verdict.outcome === 'error') {
+          fail(verdict.code);
+          return;
+        }
+        if (verdict.outcome === 'end') {
+          finish(pagination ? pagination.total : null);
+          return;
+        }
+
+        continueIfNeeded();
       },
-      { immediate: true }
+      { immediate: true, deep: false }
     );
+
+    // Changer de collection est un changement complet de source.
+    watch(collectionId, () => {
+      sourceGeneration.value += 1;
+      clearFetchTimeout();
+      clearLookupTimer();
+      missingSince = null;
+      accumulator.value = [];
+      keys.value = new Set();
+      pendingOffset.value = null;
+      state.value = STATES.INITIALIZING;
+    });
 
     // Un changement de cle invalide toutes les cles deja calculees.
     watch(itemKey, () => {
-      applyReset(incomingItems.value, 0);
+      resetAll(incomingItems.value, 0);
     });
-
-    // Changer de source est un reset legitime : l'etat d'erreur de l'ancienne source
-    // ne doit pas bloquer la nouvelle.
-    watch(
-      () => props.content.paginatedSource,
-      () => {
-        applyReset(incomingItems.value, 0);
-      }
-    );
 
     /* -------------------------------------------------------------- *
      * Detection de fin de liste
      * -------------------------------------------------------------- */
 
     const onScroll = () => {
+      if (isManual.value) return;
       if (isSentinelNear()) loadMore();
     };
 
@@ -411,6 +547,7 @@ export default {
     const createObserver = () => {
       teardownWatchers();
       if (!sentinel.value || !root.value) return false;
+      if (isManual.value) return true;
 
       if (typeof IntersectionObserver !== 'undefined') {
         observer = new IntersectionObserver(
@@ -452,7 +589,7 @@ export default {
       }, 50 * (attempt + 1));
     };
 
-    watch(() => props.content.rootMargin, () => nextTick(() => ensureObserver()));
+    watch([() => props.content.rootMargin, isManual], () => nextTick(() => ensureObserver()));
 
     onMounted(() => nextTick(() => ensureObserver()));
 
@@ -460,6 +597,7 @@ export default {
       teardownWatchers();
       clearObserverRetry();
       clearFetchTimeout();
+      clearLookupTimer();
     });
 
     return {
@@ -467,7 +605,11 @@ export default {
       sentinel,
       entries,
       itemStyle,
-      isEditing,
+      showManualTrigger,
+      manualLabel,
+      busyLabel,
+      isBusy,
+      onManualLoad,
     };
   },
 };
@@ -491,6 +633,25 @@ export default {
      de sticky ou de :nth-child. */
   content-visibility: auto;
   contain-intrinsic-size: auto var(--ic-item-height, 80px);
+}
+
+.ic__more {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: center;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.ic__more:disabled {
+  cursor: default;
+  opacity: 0.6;
+  text-decoration: none;
 }
 
 .ic__sentinel {
