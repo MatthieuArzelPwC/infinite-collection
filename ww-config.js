@@ -1,13 +1,13 @@
-// UUID de la Flexbox WeWeb utilisee comme element repete.
-// Repris de pwc-mw/ww-virtual-flexbox (ww-config.js:71) qui l'utilise en production.
-// A corriger au premier test dans le studio si l'element ne se materialise pas.
+// UUID de la Flexbox WeWeb standard telle qu'elle est enregistree dans le projet.
+// Les composants officiels utilisent le nom `ww-flexbox` ; l'identifiant est
+// conserve ici parce qu'il est verifie fonctionnel dans le Studio cible.
 const WW_FLEXBOX_TYPE = 'b783dc65-d528-4f74-8c14-e27c934c39b1';
 
 const collectionHelp =
   "Collection a afficher et a paginer. Un seul choix suffit : le composant en lit les donnees, la limite, l'offset et le total.\n\nLa collection DOIT avoir une limite configuree (ex: 50) : c'est elle qui active la pagination serveur.";
 
 const manualLoadHelp =
-  "Affiche un bouton apres le dernier element pour charger la page suivante. En mode manuel, le defilement ne declenche aucune requete.";
+  "Affiche un bouton apres le dernier element pour charger la page suivante. En mode manuel, le defilement n'declenche aucune requete mais l'evenement 'A l approche du bas' reste emis.";
 
 export default {
   options: {
@@ -28,6 +28,11 @@ export default {
       name: 'loadMore',
       label: { en: 'On load more', fr: 'Au chargement de la page suivante' },
       event: { offset: 0, limit: 0, total: 0, page: 0 },
+    },
+    {
+      name: 'reachBottom',
+      label: { en: 'On reach bottom', fr: 'A l approche du bas' },
+      event: { distance: 0, loaded: 0, hasMore: true },
     },
     {
       name: 'reachEnd',
@@ -73,7 +78,7 @@ export default {
       section: 'settings',
       type: 'OnOff',
       bindable: true,
-      defaultValue: true,
+      defaultValue: false,
       /* wwEditor:start */
       bindingValidation: {
         type: 'boolean',
@@ -102,5 +107,45 @@ export default {
       },
       /* wwEditor:end */
     },
+    scrollMargin: {
+      label: {
+        en: 'Scroll margin (px)',
+        fr: 'Marge de declenchement (px)',
+      },
+      section: 'settings',
+      type: 'Number',
+      options: { min: 0, max: 2000, step: 10 },
+      defaultValue: 300,
+      /* wwEditor:start */
+      propertyHelp: {
+        tooltip:
+          "Distance au bas du conteneur a partir de laquelle la page suivante est demandee. Valeur mesuree comme fiable dans le Studio : 300.",
+      },
+      /* wwEditor:end */
+    },
+    debug: {
+      label: {
+        en: 'Debug logs',
+        fr: 'Journaux de debogage',
+      },
+      section: 'settings',
+      type: 'OnOff',
+      defaultValue: false,
+      /* wwEditor:start */
+      propertyHelp: {
+        tooltip:
+          "Desactive par defaut : un capteur de defilement peut inonder la console d'une application publiee.",
+      },
+      /* wwEditor:end */
+    },
   },
+  /* wwEditor:start */
+  actions: [
+    {
+      label: { en: 'Reset', fr: 'Reinitialiser' },
+      action: 'reset',
+      args: [],
+    },
+  ],
+  /* wwEditor:end */
 };

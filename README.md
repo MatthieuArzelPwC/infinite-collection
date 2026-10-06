@@ -1,98 +1,136 @@
-# Infinite collection - composant WeWeb
+# Infinite collection — composant WeWeb
 
-Affiche et accumule les pages d'une collection WeWeb paginee. Le composant utilise une seule source, choisie dans la propriete `Collection`.
+Affiche une collection WeWeb paginée et charge les pages suivantes à l'approche du bas de liste. Une seule propriété à renseigner : `Collection`.
+
+## Faits mesurés
+
+Deux mesures ont été faites dans le Studio avant d'écrire ce composant. Elles déterminent toute l'architecture et doivent être revérifiées si WeWeb change de comportement.
+
+### WeWeb accumule lui-même les pages
+
+Collection de 8342 lignes, limite 12, relevé avant puis après `setOffset(12)` :
+
+| | page 1 | page 2 |
+|---|---|---|
+| `data.length` | 8342 | 8342 |
+| lignes présentes | 12 | 24 |
+| première présente | 0 | 0 |
+| trous réels | 0 | 0 |
+
+`data` est un tableau **pré-dimensionné au total**, rempli progressivement, dont **rien n'est jamais libéré**. L'accumulation est donc faite par WeWeb.
+
+Conséquence : le composant ne tient aucun accumulateur. La liste affichée est une projection directe du store. Il n'y a ni suivi d'offset, ni génération de requête, ni classification des pages reçues — ces mécanismes n'existent que pour reconstituer une information que `data` porte déjà.
+
+### `IntersectionObserver` est fiable sur les trois montages WeWeb
+
+Mesuré dans le dépôt de R&D [`MatthieuArzelPwC/test-scroll`](https://github.com/MatthieuArzelPwC/test-scroll), qui compare trois stratégies de détection.
+
+| Montage | Résultat |
+|---|---|
+| le composant défile lui-même | déclenche, 3 échantillons |
+| un wrapper WeWeb défile | déclenche, conteneur correctement identifié |
+| la page défile | déclenche |
+| liste trop courte pour défiler | déclenche spontanément |
+
+Trois échantillons par parcours, contre plusieurs dizaines par seconde pour une écoute du `scroll` en capture sur `document`.
 
 ## Contrat
 
-- collection dediee au composant ;
-- une seule instance consommatrice ;
-- aucun Paginator concomitant ;
-- limite configuree dans WeWeb ;
-- ordre serveur fixe et deterministe ;
-- filtres et donnees inchanges pendant le parcours.
+- collection dédiée au composant, limite configurée dans WeWeb ;
+- une seule instance consommatrice, pas de Paginator concomitant ;
+- ordre serveur déterministe, filtres et données inchangés pendant le parcours.
 
 ## Configuration
 
 1. Choisir une collection dans `Collection`.
-2. Configurer sa limite dans WeWeb, par exemple 50.
-3. Fixer la hauteur du composant avec les styles standard WeWeb.
-4. Deposer le contenu a repeter dans la Flexbox interne.
-5. Choisir le mode de chargement.
+2. Vérifier qu'elle a une limite (ex. 50) : c'est elle qui active la pagination serveur.
+3. Fixer la hauteur du composant ou de son conteneur avec les styles WeWeb.
+4. Déposer le contenu à répéter dans la Flexbox interne.
+
+## Architecture
+
+Frontières étanches : chaque module est corrigeable sans effet sur les autres.
+
+| Fichier | Rôle | Dépendances |
+|---|---|---|
+| `src/rows.mjs` | projette `data` en lignes affichables | pure |
+| `src/pagination.mjs` | décision d'offset, calquée sur le Paginator officiel | pure |
+| `src/scrollParent.mjs` | trouve le conteneur qui défile | pure, DOM injecté |
+| `src/bottomSensor.mjs` | `IntersectionObserver` auto-réparant | DOM |
+| `src/collection.mjs` | **seul** fichier touchant `wwLib` | WeWeb |
+| `src/wwElement.vue` | assemblage | Vue |
+
+### État local
+
+Une seule référence : `pendingOffset`, qui empêche d'émettre deux fois la même demande. Tout le reste est dérivé du store à la lecture.
+
+Il n'y a ni machine à états, ni compteur de génération, ni délai d'attente. `setOffset` est traité comme un envoi sans retour, exactement comme dans le Paginator officiel : il ne renvoie ni promesse ni accusé de réception, et l'arrivée des données ne se constate que par la réactivité du store.
+
+### Le capteur se reconstruit
+
+La racine d'un `IntersectionObserver` est figée à la souscription. Or la liste démarre vide : aucun conteneur n'est encore scrollable, donc l'observateur se calerait définitivement sur le viewport et le seuil ne signifierait plus rien.
+
+L'observateur est donc **détruit et recréé dès que le conteneur qui défile change d'identité**. C'est probablement ce point qui avait condamné cette API dans une version antérieure.
 
 ## Modes de chargement
 
+### Automatique (par défaut)
+
+Une page est demandée quand la sentinelle approche à moins de `Marge de déclenchement` du bas du conteneur qui défile réellement. Si la liste reste plus courte que la zone visible, le chargement s'enchaîne jusqu'à remplir l'écran.
+
+Un verrou avec hystérésis empêche la rafale : il ne se rouvre qu'après une remontée franche au-delà du seuil.
+
 ### Manuel
 
-`Chargement manuel` est actif par defaut. Le bouton est rendu apres le dernier element de la collection et son libelle est configurable.
-
-- Seul un clic demande une page.
-- Le scroll ne charge rien.
-- Pendant une requete, le bouton reste present mais est desactive.
-- Apres un timeout, la requete reste verrouillee pour ne pas sauter de page.
-- Le bouton de debug n'est jamais masque, desactive ou bloque par une decision de fin interne.
-- Chaque clic utilise le meme chemin de pagination que le scroll : il avance d'une limite depuis le dernier offset accepte et appelle `setOffset` si une page existe.
-
-### Automatique
-
-Desactiver `Chargement manuel`. Le bouton disparait et le composant ecoute les evenements de scroll en capture afin de fonctionner que le scroll appartienne au composant, a un wrapper WeWeb ou a la page.
-
-- Une seule requete peut etre en vol.
-- Une nouvelle page est demandee quand la sentinelle approche a moins de 300 px du bas du conteneur qui defile reellement.
-- Si la liste reste trop courte apres une page, le composant enchaine jusqu'a remplir la zone visible ou atteindre la fin.
+Activer `Chargement manuel`. Un bouton apparaît après la dernière ligne ; le défilement ne déclenche aucune requête. L'événement `reachBottom` reste émis, ce qui permet de brancher un workflow sans attendre le clic.
 
 ## Pagination
 
-L'identifiant selectionne sert a :
+L'identifiant sélectionné sert à lire les données via `$store.getters['data/getCollections'][id]`, les métadonnées via `getPaginationOptions(id)`, et à demander une page via `setOffset(id, offset)`.
 
-- lire la page courante via `$store.getters['data/getCollections'][id]` ;
-- lire `limit`, `offset` et `total` avec `getPaginationOptions(id)` ;
-- demander une page avec `setOffset(id, offset)`.
+Le getter du store n'est pas une API publique documentée. Son accès est confiné à `src/collection.mjs`.
 
-Le store est une API interne WeWeb. Son acces est isole dans un seul `computed`.
+L'offset demandé est **dérivé des données** : première position manquante, alignée sur une limite de page. Les métadonnées peuvent être en retard d'un cycle réactif sur les données, ce qui rend un offset mémorisé peu fiable.
 
-Les pages sont placees par position absolue. Le composant refuse les trous et ne tente pas de cohabiter avec un Paginator ou un workflow pilotant le meme offset. La fin est determinee par `offset + limit >= total`, comme dans le Paginator WeWeb ; elle n'est jamais deduite du nombre d'elements exposes par le store.
+La fin suit le contrat du Paginator officiel : plus aucune position manquante.
 
-## Evenements
+## Événements
 
-### `loadMore`
+| Nom | Charge utile | Quand |
+|---|---|---|
+| `reachBottom` | `distance`, `loaded`, `hasMore` | à la détection, avant la requête |
+| `loadMore` | `offset`, `limit`, `total`, `page` | après `setOffset` |
+| `reachEnd` | `total`, `loaded` | une fois par source, à la fin |
+| `error` | `code`, `message` | panne de pagination |
 
-Emis apres l'appel a `setOffset` avec `offset`, `limit`, `total` et `page`.
-
-### `reachEnd`
-
-Emis une seule fois lorsque le total est couvert. Charge utile : `total`, `loaded`.
-
-### `error`
-
-Charge utile : `code`, `message`. Les lignes deja affichees sont conservees.
-
-Codes principaux :
+Deux codes d'erreur seulement, le Paginator officiel n'en ayant aucun :
 
 - `NO_COLLECTION_SELECTED`
-- `COLLECTION_NOT_FOUND`
-- `COLLECTION_DATA_UNAVAILABLE`
-- `COLLECTION_FETCH_FAILED`
-- `API_UNAVAILABLE`
-- `PAGINATION_READ_FAILED`
-- `NO_METADATA`
-- `INVALID_LIMIT`
-- `INVALID_OFFSET`
-- `INVALID_TOTAL`
-- `SET_OFFSET_FAILED`
-- `FETCH_TIMEOUT`
-- `EMPTY_PAGE`
-- `INCOMPLETE_PAGE`
-- `UNEXPECTED_OFFSET`
+- `PAGINATION_UNAVAILABLE` — collection absente du runtime, API indisponible, ou limite non configurée
+
+Les lignes déjà affichées sont conservées en cas d'erreur. Une action `Reset` est exposée aux workflows.
 
 ## Performance
 
-Les elements restent montes. `content-visibility: auto` et une reserve de 80 px limitent le travail de rendu hors ecran. Une vraie virtualisation reste hors perimetre de cette version.
+Les lignes restent montées. `content-visibility: auto` et une réserve de 80 px limitent le travail de rendu hors écran, mais ne réduisent ni le coût de montage ni la mémoire.
 
-## Developpement
+Une vraie virtualisation reste hors périmètre. L'architecture la rend greffable : seule la projection de `src/rows.mjs` et le `v-for` seraient concernés, sans toucher à la pagination.
+
+## Développement
 
 ```bash
-npm test
+npm test          # 73 tests
 npm run build
 ```
 
-Le composant ne possede aucune dependance runtime.
+Aucune dépendance runtime.
+
+### Règle de test
+
+**Aucune assertion par expression régulière sur le texte source.** La version précédente en comptait 38 : elles figeaient l'implémentation et protégeaient quatre bugs, tout en laissant le runtime sans aucune couverture.
+
+Les modules purs sont testés par leur comportement. `src/collection.mjs` est testé avec un faux `wwLib`, `src/bottomSensor.mjs` avec un faux DOM — y compris le scénario d'arrivée asynchrone des données.
+
+### Diagnostic
+
+`test.js` contient un script à coller dans la console du navigateur. Il relève la forme réelle de `collection.data` avant et après un changement de page, et vérifie les hypothèses ci-dessus sur une collection donnée.
